@@ -159,8 +159,8 @@ enum PreviewRenderer {
         ]
         let placeholders = [MenuBarMeter(glyph: "5h", percent: nil), MenuBarMeter(glyph: "7d", percent: nil)]
 
-        let rowHeight = MeterRenderer.height
-        let columnWidth: CGFloat = 200
+        let rowHeight = MeterRenderer.height(for: variants[0])
+        let columnWidth: CGFloat = 260
         let rows = variants.count + 1
         let size = NSSize(width: columnWidth * 2, height: rowHeight * CGFloat(rows))
 

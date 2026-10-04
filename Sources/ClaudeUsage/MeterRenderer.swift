@@ -41,21 +41,36 @@ struct MenuBarOptions: Equatable {
     var showGlyphs: Bool
     /// Fade the rings when the data is out of date.
     var dimmed: Bool
+    /// Height of the menu bar being drawn into (`NSStatusBar.system.thickness`).
+    var barHeight: CGFloat = MeterRenderer.standardBarHeight
 }
 
 /// Draws the row of circular meters shown in the menu bar.
 enum MeterRenderer {
-    static let height: CGFloat = 22
-    static let ringDiameter: CGFloat = 16
-    static let ringLineWidth: CGFloat = 2.3
-    static let meterSpacing: CGFloat = 5
-    static let textGap: CGFloat = 2.5
+    /// The menu bar is 24pt tall on macOS 11 and later, and taller on MacBooks with a notch.
+    static let standardBarHeight: CGFloat = 24
+    /// Rings grow to this diameter where the menu bar has room for it.
+    static let preferredRingDiameter: CGFloat = 24
+    /// Kept clear above and below each ring so it never touches the menu bar's edges.
+    static let verticalMargin: CGFloat = 1
+    static let ringLineWidth: CGFloat = 3.3
+    static let meterSpacing: CGFloat = 6
+    static let textGap: CGFloat = 3
     static let horizontalInset: CGFloat = 1
 
     static let percentFont = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)
 
-    static func glyphFont(for glyph: String) -> NSFont {
-        let size: CGFloat = glyph.count > 1 ? 6.5 : 7.5
+    static func ringDiameter(for options: MenuBarOptions) -> CGFloat {
+        min(preferredRingDiameter, max(options.barHeight - verticalMargin * 2, 12))
+    }
+
+    static func height(for options: MenuBarOptions) -> CGFloat {
+        ringDiameter(for: options) + verticalMargin * 2
+    }
+
+    static func glyphFont(for glyph: String, ringDiameter: CGFloat) -> NSFont {
+        // Proportions tuned on a 16pt ring, scaled with the ring.
+        let size = (glyph.count > 1 ? 6.5 : 7.5) * ringDiameter / 16
         let font = NSFont.systemFont(ofSize: size, weight: .bold)
         if let rounded = font.fontDescriptor.withDesign(.rounded), let roundedFont = NSFont(descriptor: rounded, size: size) {
             return roundedFont
@@ -68,15 +83,16 @@ enum MeterRenderer {
     }
 
     static func size(for meters: [MenuBarMeter], options: MenuBarOptions) -> NSSize {
+        let diameter = ringDiameter(for: options)
         var width = horizontalInset * 2
         for (index, meter) in meters.enumerated() {
             if index > 0 { width += meterSpacing }
-            width += ringDiameter
+            width += diameter
             if options.showPercentages {
                 width += textGap + textSize(percentText(meter)).width
             }
         }
-        return NSSize(width: ceil(max(width, ringDiameter + horizontalInset * 2)), height: height)
+        return NSSize(width: ceil(max(width, diameter + horizontalInset * 2)), height: height(for: options))
     }
 
     /// The status item image. Monochrome images are templates tinted by macOS; the other
@@ -104,13 +120,14 @@ enum MeterRenderer {
             if options.dimmed { context.endTransparencyLayer() }
         }
 
+        let diameter = ringDiameter(for: options)
         var x = rect.minX + horizontalInset
         let midY = rect.midY
         for (index, meter) in meters.enumerated() {
             if index > 0 { x += meterSpacing }
-            let ringRect = NSRect(x: x, y: midY - ringDiameter / 2, width: ringDiameter, height: ringDiameter)
+            let ringRect = NSRect(x: x, y: midY - diameter / 2, width: diameter, height: diameter)
             drawRing(meter, in: ringRect, options: options, baseColor: baseColor)
-            x += ringDiameter
+            x += diameter
 
             if options.showPercentages {
                 x += textGap
@@ -153,7 +170,7 @@ enum MeterRenderer {
         }
 
         if options.showGlyphs, !meter.glyph.isEmpty {
-            let font = glyphFont(for: meter.glyph)
+            let font = glyphFont(for: meter.glyph, ringDiameter: ringRect.width)
             let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: baseColor]
             let text = meter.glyph as NSString
             let width = text.size(withAttributes: attributes).width

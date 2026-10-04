@@ -78,7 +78,8 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
             style: settings.meterStyle,
             showPercentages: settings.showPercentages,
             showGlyphs: settings.showGlyphs,
-            dimmed: store.snapshot == nil || store.isStale
+            dimmed: store.snapshot == nil || store.isStale,
+            barHeight: NSStatusBar.system.thickness
         )
 
         if force || lastRendered?.meters != menuBarMeters || lastRendered?.options != options {
