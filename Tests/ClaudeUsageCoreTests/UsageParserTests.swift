@@ -20,11 +20,12 @@ final class UsageParserTests: XCTestCase {
 
         let session = try XCTUnwrap(snapshot.meter(id: MeterID.session))
         XCTAssertEqual(session.title, "Session")
-        XCTAssertEqual(session.glyph, "5h")
+        XCTAssertEqual(session.glyph, "5")
         XCTAssertEqual(session.percent, 22)
         XCTAssertEqual(try XCTUnwrap(session.resetsAt).timeIntervalSince1970, 1_771_596_000.364238, accuracy: 0.001)
 
         let weekly = try XCTUnwrap(snapshot.meter(id: MeterID.weekly))
+        XCTAssertEqual(weekly.glyph, "W")
         XCTAssertEqual(weekly.percent, 49)
 
         let sonnet = try XCTUnwrap(snapshot.meter(id: MeterID.weeklySonnet))

@@ -135,13 +135,13 @@ struct WindowDescriptor {
         case MeterID.session:
             title = "Session"
             detail = "Rolling 5-hour window"
-            glyph = "5h"
+            glyph = MeterID.sessionGlyph
             sortOrder = 0
             return
         case MeterID.weekly:
             title = "Weekly"
             detail = "All models · 7-day window"
-            glyph = "7d"
+            glyph = MeterID.weeklyGlyph
             sortOrder = 1
             return
         default:

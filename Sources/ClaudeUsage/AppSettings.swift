@@ -52,7 +52,7 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(showPercentages, forKey: Key.showPercentages) }
     }
 
-    /// Draw a short label ("5h", "7d", …) inside each ring.
+    /// Draw a short label ("5", "W", …) inside each ring.
     @Published var showGlyphs: Bool {
         didSet { defaults.set(showGlyphs, forKey: Key.showGlyphs) }
     }

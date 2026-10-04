@@ -71,7 +71,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         if store.snapshot != nil {
             menuBarMeters = store.menuBarMeters.map { MenuBarMeter(glyph: $0.glyph, percent: $0.percent) }
         } else {
-            let glyphs = [MeterID.session: "5h", MeterID.weekly: "7d"]
+            let glyphs = [MeterID.session: MeterID.sessionGlyph, MeterID.weekly: MeterID.weeklyGlyph]
             menuBarMeters = settings.placeholderMeterIDs.map { MenuBarMeter(glyph: glyphs[$0] ?? "", percent: nil) }
         }
         let options = MenuBarOptions(

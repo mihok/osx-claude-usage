@@ -2,8 +2,8 @@
 
 A small macOS menu bar app that shows your Claude plan usage as a row of circular meters, one per limit:
 
-- **5h**: the rolling 5-hour session limit
-- **7d**: the weekly limit across all models
+- **5**: the rolling 5-hour session limit
+- **W**: the weekly limit across all models
 - **S**, **O**, **F**, …: per-model weekly limits (Sonnet, Opus, Fable, …), shown once you start using them
 
 Each ring fills as you use more of that limit. It turns orange at 70% and red at 90%. Click the meters for details, including the exact percentages and when each limit resets. Right-click for Refresh, Settings and Quit.

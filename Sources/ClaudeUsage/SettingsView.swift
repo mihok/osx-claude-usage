@@ -46,7 +46,7 @@ struct SettingsView: View {
                         Text(style.displayName).tag(style)
                     }
                 }
-                Toggle("Label inside each ring (5h, 7d, …)", isOn: $settings.showGlyphs)
+                Toggle("Label inside each ring (5, W, …)", isOn: $settings.showGlyphs)
                 Toggle("Percentage next to each ring", isOn: $settings.showPercentages)
             } header: {
                 Text("Menu bar")

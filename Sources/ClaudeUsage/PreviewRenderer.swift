@@ -157,7 +157,10 @@ enum PreviewRenderer {
             MenuBarOptions(style: .adaptive, showPercentages: true, showGlyphs: false, dimmed: false),
             MenuBarOptions(style: .adaptive, showPercentages: false, showGlyphs: true, dimmed: true),
         ]
-        let placeholders = [MenuBarMeter(glyph: "5h", percent: nil), MenuBarMeter(glyph: "7d", percent: nil)]
+        let placeholders = [
+            MenuBarMeter(glyph: MeterID.sessionGlyph, percent: nil),
+            MenuBarMeter(glyph: MeterID.weeklyGlyph, percent: nil),
+        ]
 
         let rowHeight = MeterRenderer.height(for: variants[0])
         let columnWidth: CGFloat = 260

@@ -68,9 +68,8 @@ enum MeterRenderer {
         ringDiameter(for: options) + verticalMargin * 2
     }
 
-    static func glyphFont(for glyph: String, ringDiameter: CGFloat) -> NSFont {
-        // Proportions tuned on a 16pt ring, scaled with the ring.
-        let size = (glyph.count > 1 ? 6.5 : 7.5) * ringDiameter / 16
+    static func glyphFont(for glyph: String) -> NSFont {
+        let size: CGFloat = glyph.count > 1 ? 6.5 : 7.5
         let font = NSFont.systemFont(ofSize: size, weight: .bold)
         if let rounded = font.fontDescriptor.withDesign(.rounded), let roundedFont = NSFont(descriptor: rounded, size: size) {
             return roundedFont
@@ -170,7 +169,7 @@ enum MeterRenderer {
         }
 
         if options.showGlyphs, !meter.glyph.isEmpty {
-            let font = glyphFont(for: meter.glyph, ringDiameter: ringRect.width)
+            let font = glyphFont(for: meter.glyph)
             let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: baseColor]
             let text = meter.glyph as NSString
             let width = text.size(withAttributes: attributes).width

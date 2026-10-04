@@ -34,6 +34,10 @@ public enum MeterID {
 
     /// The two windows every plan has; always shown even when idle.
     public static let primary: [String] = [session, weekly]
+
+    /// Labels drawn inside the session and weekly rings.
+    public static let sessionGlyph = "5"
+    public static let weeklyGlyph = "W"
 }
 
 /// One usage-limit window, e.g. the rolling 5-hour session.
@@ -44,7 +48,7 @@ public struct UsageMeter: Equatable, Identifiable, Sendable {
     public let title: String
     /// One-line explanation of the window, e.g. "5-hour rolling window".
     public let detail: String
-    /// One or two characters drawn inside the menu bar ring, e.g. "5h".
+    /// Short label drawn inside the menu bar ring, e.g. "5" or "W".
     public let glyph: String
     /// Percent of the limit used, clamped to 0...100.
     public let percent: Double
