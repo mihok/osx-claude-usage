@@ -1,0 +1,47 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Toolchain
+        run: swift --version
+
+      - name: Test
+        run: swift test
+
+      - name: Build app (universal)
+        run: UNIVERSAL=1 scripts/build-app.sh
+
+      - name: Check bundle
+        run: |
+          lipo -info "build/Claude Usage.app/Contents/MacOS/ClaudeUsage"
+          plutil -p "build/Claude Usage.app/Contents/Info.plist"
+          ls -la "build/Claude Usage.app/Contents/Resources"
+
+      - name: Render previews
+        run: |
+          "build/Claude Usage.app/Contents/MacOS/ClaudeUsage" --render-preview build/preview
+          ls -la build/preview
+
+      - name: Package
+        run: ditto -c -k --keepParent "build/Claude Usage.app" "build/Claude-Usage.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Claude-Usage
+          path: build/Claude-Usage.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: previews
+          path: build/preview
