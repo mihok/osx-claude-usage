@@ -13,11 +13,11 @@ if [[ ! -w "$DEST_DIR" ]]; then
 fi
 
 # Quit a running copy so it can be replaced.
-osascript -e 'tell application id "com.github.mihok.ClaudeUsage" to quit' > /dev/null 2>&1 || true
-pkill -x ClaudeUsage > /dev/null 2>&1 || true
-sleep 1
+if pkill -x ClaudeUsage > /dev/null 2>&1; then
+  sleep 1
+fi
 
-rm -rf "$DEST_DIR/$APP_NAME"
+rm -rf "${DEST_DIR:?}/${APP_NAME:?}"
 cp -R "build/$APP_NAME" "$DEST_DIR/"
 echo "==> Installed $DEST_DIR/$APP_NAME"
 

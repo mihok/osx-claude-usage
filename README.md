@@ -13,7 +13,7 @@ These are the same numbers shown by `/usage` in Claude Code and on **claude.ai â
 ## Requirements
 
 - macOS 13 Ventura or later
-- Xcode 15+ or the Xcode Command Line Tools (Swift 5.9+) to build
+- Xcode 15+ or the Xcode Command Line Tools (Swift 5.9+) to build. `make test` needs full Xcode for XCTest.
 - A Claude Pro, Max, Team or Enterprise plan
 
 ## Install
