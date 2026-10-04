@@ -59,7 +59,7 @@ final class CredentialsTests: XCTestCase {
         try Data(#"{"claudeAiOauth":{"accessToken":"from-file","subscriptionType":"pro"}}"#.utf8).write(to: file)
 
         let loader = ClaudeCodeCredentialsLoader(
-            keychainService: "ClaudeUsageTests-missing-\(UUID().uuidString)",
+            keychainService: nil,
             credentialFiles: [directory.appendingPathComponent("missing.json"), file]
         )
         let credentials = try loader.load()
@@ -70,7 +70,7 @@ final class CredentialsTests: XCTestCase {
 
     func testLoaderReportsNotSignedIn() {
         let loader = ClaudeCodeCredentialsLoader(
-            keychainService: "ClaudeUsageTests-missing-\(UUID().uuidString)",
+            keychainService: nil,
             credentialFiles: []
         )
         XCTAssertThrowsError(try loader.load()) { error in

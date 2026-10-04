@@ -189,19 +189,19 @@ enum PreviewRenderer {
         appearance: NSAppearance.Name,
         snapshot: UsageSnapshot?,
         error: UsageError?
-    ) -> NSBitmapImageRep {
+    ) throws -> NSBitmapImageRep {
         let settings = AppSettings(defaults: previewDefaults())
         let store = UsageStore(settings: settings, previewSnapshot: snapshot, planName: "Max", error: error)
         let view = UsagePopoverView(store: store, settings: settings, openSettings: {}, quit: {}, fixedNow: now)
             .background(Color(nsColor: .windowBackgroundColor))
-        return snapshotView(NSHostingView(rootView: view), appearance: appearance)
+        return try snapshotView(NSHostingView(rootView: view), appearance: appearance)
     }
 
-    private static func settingsWindow() -> NSBitmapImageRep {
+    private static func settingsWindow() throws -> NSBitmapImageRep {
         let settings = AppSettings(defaults: previewDefaults())
         let store = UsageStore(settings: settings, previewSnapshot: sampleSnapshot, planName: "Max")
         let view = SettingsView(settings: settings, store: store)
-        return snapshotView(NSHostingView(rootView: view), appearance: .aqua)
+        return try snapshotView(NSHostingView(rootView: view), appearance: .aqua)
     }
 
     // MARK: - Helpers
@@ -213,9 +213,10 @@ enum PreviewRenderer {
         return defaults
     }
 
-    private static func snapshotView(_ view: NSView, appearance: NSAppearance.Name) -> NSBitmapImageRep {
+    private static func snapshotView(_ view: NSView, appearance: NSAppearance.Name) throws -> NSBitmapImageRep {
         view.appearance = NSAppearance(named: appearance)
         let size = view.fittingSize
+        guard size.width > 0, size.height > 0 else { throw CocoaError(.featureUnsupported) }
         view.frame = NSRect(origin: .zero, size: size)
 
         // Host the view in an off-screen window so AppKit and SwiftUI lay it out fully.
@@ -228,18 +229,15 @@ enum PreviewRenderer {
         window.appearance = view.appearance
         window.contentView = view
         window.orderBack(nil)
+        defer { window.orderOut(nil) }
         view.layoutSubtreeIfNeeded()
         RunLoop.current.run(until: Date().addingTimeInterval(0.4))
         view.layoutSubtreeIfNeeded()
 
-        let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds)
-            ?? NSBitmapImageRep(
-                bitmapDataPlanes: nil, pixelsWide: Int(size.width), pixelsHigh: Int(size.height),
-                bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
-                colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
-            )!
+        guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
+            throw CocoaError(.featureUnsupported)
+        }
         view.cacheDisplay(in: view.bounds, to: rep)
-        window.orderOut(nil)
         return rep
     }
 

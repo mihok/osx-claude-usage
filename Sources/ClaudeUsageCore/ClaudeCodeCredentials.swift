@@ -81,12 +81,13 @@ public enum PlanName {
 /// This app never refreshes or rewrites the token: Claude Code owns it, and refreshing it
 /// here would rotate the refresh token underneath Claude Code.
 public struct ClaudeCodeCredentialsLoader: Sendable {
-    public var keychainService: String
+    /// Keychain item to read on macOS; nil skips the Keychain and only reads `credentialFiles`.
+    public var keychainService: String?
     public var credentialFiles: [URL]
     public var keychainTimeout: TimeInterval
 
     public init(
-        keychainService: String = "Claude Code-credentials",
+        keychainService: String? = "Claude Code-credentials",
         credentialFiles: [URL]? = nil,
         keychainTimeout: TimeInterval = 90
     ) {
@@ -110,12 +111,14 @@ public struct ClaudeCodeCredentialsLoader: Sendable {
     public func load() throws -> ClaudeCodeCredentials {
         var keychainError: UsageError?
         #if os(macOS)
-        do {
-            if let data = try readKeychain() {
-                return try ClaudeCodeCredentials.parse(data)
+        if let keychainService {
+            do {
+                if let data = try readKeychain(service: keychainService) {
+                    return try ClaudeCodeCredentials.parse(data)
+                }
+            } catch let error as UsageError {
+                keychainError = error
             }
-        } catch let error as UsageError {
-            keychainError = error
         }
         #endif
 
@@ -129,10 +132,10 @@ public struct ClaudeCodeCredentialsLoader: Sendable {
     #if os(macOS)
     /// Uses `/usr/bin/security`, the same tool Claude Code uses to write the item, so the
     /// Keychain's access list usually lets it read without prompting.
-    private func readKeychain() throws -> Data? {
+    private func readKeychain(service: String) throws -> Data? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-        process.arguments = ["find-generic-password", "-s", keychainService, "-w"]
+        process.arguments = ["find-generic-password", "-s", service, "-w"]
         let output = Pipe()
         let errors = Pipe()
         process.standardOutput = output
