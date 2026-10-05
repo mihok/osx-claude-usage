@@ -108,17 +108,16 @@ enum PreviewRenderer {
 
     static let now = ISO8601.date(from: "2026-10-04T13:00:00Z") ?? Date()
 
+    /// One line of `claude -p /usage --output-format stream-json`, as Claude Code prints it.
     static let sampleSnapshot: UsageSnapshot = {
-        let json = """
-        {
-          "five_hour": { "utilization": 23, "resets_at": "2026-10-04T15:14:00Z" },
-          "seven_day": { "utilization": 71, "resets_at": "2026-10-07T09:00:00Z" },
-          "seven_day_sonnet": { "utilization": 94, "resets_at": "2026-10-07T09:00:00Z" },
-          "limits": [ { "scope": { "model": { "display_name": "Fable" } }, "percent": 8, "resets_at": "2026-10-07T09:00:00Z" } ]
-        }
-        """
+        let line = #"{"type":"assistant","usage_report":{"rate_limits":{"limits":["#
+            + #"{"kind":"session","group":"session","percent":23,"resets_at":"2026-10-04T15:14:00Z","severity":"normal","is_active":true},"#
+            + #"{"kind":"weekly_all","group":"weekly","percent":71,"resets_at":"2026-10-07T09:00:00Z","severity":"warning","is_active":false},"#
+            + #"{"kind":"weekly_scoped","group":"weekly","percent":94,"resets_at":"2026-10-07T09:00:00Z","scope":{"model":{"display_name":"Sonnet"}},"severity":"critical","is_active":false},"#
+            + #"{"kind":"weekly_scoped","group":"weekly","percent":8,"resets_at":"2026-10-07T09:00:00Z","scope":{"model":{"display_name":"Fable"}},"severity":"normal","is_active":false}"#
+            + #"],"extra_usage":null}}}"#
         let fetchedAt = now.addingTimeInterval(-90)
-        return (try? UsageParser.snapshot(from: Data(json.utf8), fetchedAt: fetchedAt))
+        return (try? ClaudeUsageReport.snapshot(fromStreamJSON: line, fetchedAt: fetchedAt))
             ?? UsageSnapshot(meters: [], fetchedAt: fetchedAt)
     }()
 
@@ -139,8 +138,8 @@ enum PreviewRenderer {
         for (name, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
             try write(popover(appearance: appearance, snapshot: sampleSnapshot, error: nil), "popover-\(name).png")
         }
-        try write(popover(appearance: .aqua, snapshot: sampleSnapshot, error: .tokenExpired), "popover-error.png")
-        try write(popover(appearance: .aqua, snapshot: nil, error: .missingCookie), "popover-empty.png")
+        try write(popover(appearance: .aqua, snapshot: sampleSnapshot, error: .usageUnavailable(nil)), "popover-error.png")
+        try write(popover(appearance: .aqua, snapshot: nil, error: .notSignedIn), "popover-empty.png")
         try write(settingsWindow(), "settings.png")
         let iconSize = NSSize(width: 256, height: 256)
         try write(bitmap(size: iconSize, scale: 1) { drawIcon(in: NSRect(origin: .zero, size: iconSize)) }, "icon.png")
@@ -149,7 +148,7 @@ enum PreviewRenderer {
 
     /// Every menu bar style on light and dark menu bars, drawn at 4x so details are visible.
     private static func menuBarSheet() -> NSBitmapImageRep {
-        let meters = sampleSnapshot.relevantMeters.map { MenuBarMeter(glyph: $0.glyph, percent: $0.percent) }
+        let meters = sampleSnapshot.relevantMeters.map { MenuBarMeter($0) }
         let variants: [MenuBarOptions] = [
             MenuBarOptions(style: .adaptive, showPercentages: false, showGlyphs: true, dimmed: false),
             MenuBarOptions(style: .colorful, showPercentages: false, showGlyphs: true, dimmed: false),

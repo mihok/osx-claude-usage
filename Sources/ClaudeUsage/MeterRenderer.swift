@@ -31,8 +31,17 @@ struct MenuBarMeter: Equatable {
     var glyph: String
     /// nil draws an empty ring, used before the first refresh.
     var percent: Double?
+    var level: MeterLevel
 
-    var level: MeterLevel { MeterLevel(percent: percent ?? 0) }
+    init(glyph: String, percent: Double?, level: MeterLevel? = nil) {
+        self.glyph = glyph
+        self.percent = percent
+        self.level = level ?? MeterLevel(percent: percent ?? 0)
+    }
+
+    init(_ meter: UsageMeter) {
+        self.init(glyph: meter.glyph, percent: meter.percent, level: meter.level)
+    }
 }
 
 struct MenuBarOptions: Equatable {

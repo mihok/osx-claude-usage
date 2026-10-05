@@ -28,19 +28,19 @@ final class AppSettings: ObservableObject {
     static let refreshIntervals: [TimeInterval] = [60, 120, 300, 600, 900, 1800]
 
     private enum Key {
-        static let dataSource = "dataSource"
+        static let claudePath = "claudePath"
         static let meterStyle = "meterStyle"
         static let showPercentages = "showPercentages"
         static let showGlyphs = "showGlyphs"
         static let refreshInterval = "refreshInterval"
         static let hiddenMeterIDs = "hiddenMeterIDs"
-        static let hasSavedCookie = "hasSavedCookie"
     }
 
     private let defaults: UserDefaults
 
-    @Published var dataSource: UsageSourceKind {
-        didSet { defaults.set(dataSource.rawValue, forKey: Key.dataSource) }
+    /// Where Claude Code is installed; empty means find it automatically.
+    @Published var claudePath: String {
+        didSet { defaults.set(claudePath, forKey: Key.claudePath) }
     }
 
     @Published var meterStyle: MeterStyle {
@@ -67,22 +67,15 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(Array(hiddenMeterIDs).sorted(), forKey: Key.hiddenMeterIDs) }
     }
 
-    /// Whether a claude.ai cookie is in the Keychain (tracked here so the UI never has to
-    /// touch the Keychain).
-    @Published var hasSavedCookie: Bool {
-        didSet { defaults.set(hasSavedCookie, forKey: Key.hasSavedCookie) }
-    }
-
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        dataSource = defaults.string(forKey: Key.dataSource).flatMap(UsageSourceKind.init(rawValue:)) ?? .claudeCode
+        claudePath = defaults.string(forKey: Key.claudePath) ?? ""
         meterStyle = defaults.string(forKey: Key.meterStyle).flatMap(MeterStyle.init(rawValue:)) ?? .adaptive
         showPercentages = defaults.object(forKey: Key.showPercentages) as? Bool ?? false
         showGlyphs = defaults.object(forKey: Key.showGlyphs) as? Bool ?? true
         let interval = defaults.double(forKey: Key.refreshInterval)
         refreshInterval = interval >= 60 ? interval : 300
         hiddenMeterIDs = Set(defaults.stringArray(forKey: Key.hiddenMeterIDs) ?? [MeterID.extraUsage])
-        hasSavedCookie = defaults.bool(forKey: Key.hasSavedCookie)
     }
 
     func isShownInMenuBar(_ meterID: String) -> Bool {

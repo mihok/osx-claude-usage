@@ -1,91 +1,57 @@
 import Foundation
 
 public enum UsageError: Error, Equatable, Sendable {
-    /// No Claude Code credentials in the Keychain or on disk.
+    /// Claude Code isn't installed, or isn't at the path chosen in Settings.
+    case cliNotFound(customPath: String?)
+    /// Claude Code is installed but not signed in to a Claude account.
     case notSignedIn
-    /// Claude Code's access token has expired; Claude Code refreshes it on its next run.
-    case tokenExpired
-    /// The Keychain or credentials file exists but could not be read.
-    case credentialsUnavailable(String)
-    /// The claude.ai source is selected but no cookie has been saved.
-    case missingCookie
-    /// Claude answered 401/403.
-    case unauthorized(source: UsageSourceKind, status: Int, message: String?)
-    /// Claude answered 429.
-    case rateLimited(retryAfter: TimeInterval?)
-    case httpStatus(Int, message: String?)
+    /// Claude Code ran but couldn't fetch the plan's usage this time.
+    case usageUnavailable(String?)
+    /// Claude Code failed to run or didn't finish.
+    case cliFailed(String)
     case invalidResponse(String)
-    case network(String)
-    case noOrganization
 
-    /// Errors that are resolved on this Mac (signing in, pasting a cookie) rather than by Claude's servers.
-    /// These are re-checked quickly because no network request is involved.
+    /// Problems the user fixes on this Mac (installing or signing in to Claude Code). These are
+    /// re-checked every minute so the meters recover soon after.
     public var isLocal: Bool {
         switch self {
-        case .notSignedIn, .tokenExpired, .missingCookie:
+        case .cliNotFound, .notSignedIn:
             return true
         default:
             return false
         }
-    }
-
-    public var retryAfter: TimeInterval? {
-        if case let .rateLimited(retryAfter) = self { return retryAfter }
-        return nil
     }
 }
 
 extension UsageError: LocalizedError {
     public var errorDescription: String? {
         switch self {
+        case let .cliNotFound(customPath):
+            if let customPath, !customPath.isEmpty {
+                return "Claude Code isn't at \(customPath)."
+            }
+            return "Couldn't find Claude Code."
         case .notSignedIn:
-            return "No Claude Code sign-in found."
-        case .tokenExpired:
-            return "Your Claude Code sign-in has expired."
-        case let .credentialsUnavailable(reason):
-            return "Couldn't read Claude Code credentials: \(reason)"
-        case .missingCookie:
-            return "No claude.ai session saved."
-        case let .unauthorized(_, status, message):
-            return "Claude rejected the credentials (HTTP \(status))" + (message.map { ": \($0)" } ?? ".")
-        case .rateLimited:
-            return "Claude is rate-limiting usage requests."
-        case let .httpStatus(status, message):
-            return "Unexpected response from Claude (HTTP \(status))" + (message.map { ": \($0)" } ?? ".")
+            return "Claude Code isn't signed in."
+        case let .usageUnavailable(detail):
+            return "Claude Code couldn't fetch your usage" + (detail.map { ": \($0)" } ?? ".")
+        case let .cliFailed(reason):
+            return reason
         case let .invalidResponse(reason):
-            return "Couldn't read the usage response. \(reason)"
-        case let .network(reason):
-            return "Network error: \(reason)"
-        case .noOrganization:
-            return "No Claude organization found for this session."
+            return "Couldn't read Claude Code's usage report. \(reason)"
         }
     }
 
     public var recoverySuggestion: String? {
         switch self {
+        case .cliNotFound:
+            return "Install Claude Code and run `claude` once to sign in. If it's installed somewhere unusual, choose its location in Settings."
         case .notSignedIn:
-            return "Run `claude` in Terminal and sign in with your Claude account, or use a claude.ai browser session in Settings."
-        case .tokenExpired:
-            return "Run any `claude` command in Terminal to refresh it. The meters pick up the new sign-in automatically."
-        case .credentialsUnavailable:
-            return "If macOS asked for Keychain access, choose Always Allow."
-        case .missingCookie:
-            return "Paste your claude.ai cookie in Settings."
-        case let .unauthorized(source, _, _):
-            switch source {
-            case .claudeCode:
-                return "Run `claude` in Terminal to sign in again."
-            case .claudeWeb:
-                return "Your claude.ai session may have expired. Copy a fresh cookie into Settings."
-            }
-        case .rateLimited:
-            return "Showing the last known values; retrying automatically with a longer delay."
-        case .httpStatus, .invalidResponse:
-            return "Claude's usage endpoint may have changed. Retrying automatically."
-        case .network:
-            return "Check your connection. Retrying automatically."
-        case .noOrganization:
-            return "Make sure the cookie belongs to a signed-in claude.ai account."
+            return "Run `claude` in Terminal once and sign in with your Claude account. After that, Claude Code doesn't need to be open."
+        case .usageUnavailable:
+            return "Claude may be limiting how often usage is checked. Showing the last known values; retrying automatically."
+        case .cliFailed, .invalidResponse:
+            return "Retrying automatically. Updating Claude Code (`claude update`) may help."
         }
     }
 }

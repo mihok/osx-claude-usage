@@ -6,33 +6,33 @@ struct SettingsView: View {
     @ObservedObject var settings: AppSettings
     @ObservedObject var store: UsageStore
 
-    @State private var cookieInput = ""
-    @State private var cookieMessage: String?
+    /// Where Claude Code was found, or nil if it wasn't; empty string while looking.
+    @State private var detectedClaudePath: String? = ""
     @State private var launchAtLogin = LaunchAtLogin.isEnabled
     @State private var launchAtLoginMessage: String?
 
     var body: some View {
         Form {
             Section {
-                Picker("Read usage from", selection: $settings.dataSource) {
-                    ForEach(UsageSourceKind.allCases) { source in
-                        Text(source.displayName).tag(source)
-                    }
+                LabeledContent("Found at") {
+                    Text(detectedClaudeDescription)
+                        .foregroundColor(detectedClaudePath == nil ? Color.red : Color.secondary)
+                        .textSelection(.enabled)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                 }
-                .pickerStyle(.radioGroup)
-
-                switch settings.dataSource {
-                case .claudeCode:
-                    Text("Uses the sign-in Claude Code keeps in your Keychain. Run `claude` once in Terminal to sign in. The token is only read, never changed. If macOS asks for Keychain access, choose Always Allow.")
-                        .font(.callout)
-                        .foregroundColor(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                case .claudeWeb:
-                    cookieEditor
+                HStack {
+                    TextField("Location", text: $settings.claudePath, prompt: Text("Find automatically"))
+                    Button("Choose…", action: chooseClaude)
                 }
+                Text(Self.claudeCodeExplanation)
+                    .font(.callout)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             } header: {
-                Text("Data source")
+                Text("Claude Code")
             }
+            .task(id: settings.claudePath) { await detectClaude() }
 
             Section {
                 ForEach(meterChoices, id: \.id) { choice in
@@ -84,59 +84,37 @@ struct SettingsView: View {
         .frame(minHeight: 560)
     }
 
-    // MARK: - claude.ai cookie
+    // MARK: - Claude Code location
 
-    @ViewBuilder
-    private var cookieEditor: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("1. Open claude.ai › Settings › Usage in your browser and sign in.")
-            Text("2. Open Developer Tools › Network, reload, and select the “usage” request.")
-            Text("3. Copy its Cookie request header (or just the sessionKey value) and paste it below.")
-        }
-        .font(.callout)
-        .foregroundColor(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
-
-        Button("Open claude.ai Usage Page") {
-            if let url = URL(string: "https://claude.ai/settings/usage") {
-                NSWorkspace.shared.open(url)
-            }
-        }
-
-        SecureField("Cookie header or sessionKey", text: $cookieInput)
-            .onSubmit(saveCookie)
-
-        HStack {
-            Button("Save to Keychain", action: saveCookie)
-                .disabled(ClaudeWebCookie.normalize(cookieInput) == nil)
-            if settings.hasSavedCookie {
-                Button("Remove", role: .destructive, action: removeCookie)
-            }
-            Spacer()
-            Text(cookieMessage ?? (settings.hasSavedCookie ? "A session is saved." : "No session saved."))
-                .font(.callout)
-                .foregroundColor(.secondary)
+    private var detectedClaudeDescription: String {
+        switch detectedClaudePath {
+        case .none: return settings.claudePath.isEmpty ? "Not found" : "Nothing runnable at that location"
+        case .some(""): return "Looking…"
+        case let .some(path): return (path as NSString).abbreviatingWithTildeInPath
         }
     }
 
-    private func saveCookie() {
-        guard let cookie = ClaudeWebCookie.normalize(cookieInput) else { return }
-        do {
-            try CookieKeychain.save(cookie)
-            settings.hasSavedCookie = true
-            cookieInput = ""
-            cookieMessage = "Saved to your Keychain."
-            store.cookieDidChange()
-        } catch {
-            cookieMessage = error.localizedDescription
-        }
+    private func detectClaude() async {
+        detectedClaudePath = ""
+        let customPath = settings.claudePath
+        let found = await Task.detached(priority: .utility) {
+            try? ClaudeCLI.resolve(customPath: customPath, shell: UsageStore.loginShell, workingDirectory: nil)
+        }.value
+        detectedClaudePath = found?.executable.path
     }
 
-    private func removeCookie() {
-        CookieKeychain.delete()
-        settings.hasSavedCookie = false
-        cookieMessage = "Removed."
-        store.cookieDidChange()
+    private func chooseClaude() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose Claude Code"
+        panel.message = "Select the claude executable, for example ~/.local/bin/claude."
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.showsHiddenFiles = true
+        panel.directoryURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin")
+        if panel.runModal() == .OK, let url = panel.url {
+            settings.claudePath = url.path
+        }
     }
 
     // MARK: - Helpers
@@ -170,10 +148,12 @@ struct SettingsView: View {
         launchAtLogin = LaunchAtLogin.isEnabled
     }
 
-    /// Built as a plain String so the % signs are not read as format specifiers.
     private static let thresholdFootnote =
-        "Rings turn orange at \(Int(MeterLevel.elevatedThreshold))% and red at \(Int(MeterLevel.criticalThreshold))%. "
-        + "Per-model limits appear once you start using them."
+        "Rings turn orange, then red, as you get close to a limit. Per-model limits appear once you start using them."
+
+    private static let claudeCodeExplanation =
+        "Claude Usage asks Claude Code for its /usage report in the background. Claude Code doesn't need to be open, "
+        + "no messages are sent, and your sign-in stays inside Claude Code. If you haven't yet, run `claude` once in Terminal to sign in."
 
     static func intervalLabel(_ interval: TimeInterval) -> String {
         let minutes = Int(interval / 60)

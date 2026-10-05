@@ -63,7 +63,7 @@ public enum UsageFormatting {
 public enum RefreshSchedule {
     public static let minimumDelay: TimeInterval = 15
     public static let maximumBackoff: TimeInterval = 3600
-    /// How soon to re-check problems the user fixes on this Mac (signing in, pasting a cookie).
+    /// How soon to re-check problems the user fixes on this Mac (installing or signing in to Claude Code).
     public static let localRetryDelay: TimeInterval = 60
 
     /// - Parameters:
@@ -90,14 +90,10 @@ public enum RefreshSchedule {
         if error.isLocal {
             return min(interval, localRetryDelay)
         }
-        // Exponential backoff for server-side failures, honouring Retry-After.
+        // Exponential backoff when Claude Code can't get the numbers, which is usually Claude
+        // limiting how often usage is checked.
         let exponent = Double(min(max(consecutiveFailures - 1, 0), 8))
-        var delay = min(interval * pow(2, exponent), maximumBackoff)
-        delay = max(delay, interval)
-        if let retryAfter = error.retryAfter {
-            delay = max(delay, min(retryAfter, maximumBackoff * 6))
-        }
-        return delay
+        return max(min(interval * pow(2, exponent), maximumBackoff), interval)
     }
 
     /// Whether a snapshot is old enough that the meters should look faded.

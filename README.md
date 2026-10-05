@@ -31,17 +31,20 @@ These are the same numbers shown by `/usage` in Claude Code and on **claude.ai �
 
 ## Features
 
-- **At-a-glance rings.** They turn orange at 70% and red at 90%.
+- **At-a-glance rings.** They turn orange, then red, as you get close to a limit, following Claude's own reading of each one.
 - **Details on click.** The panel shows exact percentages and when each limit resets. Pin or unpin any limit to choose which rings stay in the menu bar.
-- **Zero setup if you use Claude Code.** The app reads the sign-in Claude Code already keeps in your Keychain. It never changes or refreshes that token.
-- **Works without Claude Code too.** Paste a claude.ai session cookie instead.
+- **Claude Code doesn't need to be open.** The app asks your installed Claude Code for its `/usage` report in the background. Claude Code keeps its own sign-in fresh, and the app never sees a token.
 - **Light and dark menu bars.** Three color styles, optional percentages, and labels inside the rings.
 - **Polite polling.** It refreshes every 5 minutes by default and backs off when Claude rate-limits. It also refreshes right after a limit resets and fades the rings when the data is out of date.
 - **Tiny and private.** It's a native AppKit/SwiftUI app with no dependencies, no analytics and no Dock icon.
 
 ## Install
 
-You'll need macOS 13 Ventura or later, and Xcode 15+ or the Xcode Command Line Tools (Swift 5.9+).
+You'll need:
+
+- macOS 13 Ventura or later
+- [Claude Code](https://claude.com/claude-code), signed in once with your Claude Pro, Max, Team or Enterprise account (run `claude` and follow the prompts)
+- Xcode 15+ or the Xcode Command Line Tools (Swift 5.9+) to build
 
 ```sh
 git clone https://github.com/mihok/osx-claude-usage.git
@@ -72,45 +75,36 @@ Choose a style in **Settings › Menu bar**. You can also replace the labels ins
 
 ## Where the numbers come from
 
-Pick a source in **Settings › Data source**.
+Every few minutes the app runs your installed Claude Code in the background with its `/usage` command:
 
-### Claude Code sign-in (default)
+```sh
+claude -p /usage --output-format stream-json --verbose --no-session-persistence --safe-mode
+```
 
-If you've signed in to [Claude Code](https://claude.com/claude-code) with your Claude account, nothing else is needed. The app reads that sign-in from the macOS Keychain (`Claude Code-credentials`) and asks Claude for your usage, the same way `/usage` does.
+- **`/usage` runs inside Claude Code.** No message is sent to a model, so checking usage doesn't use any of it up.
+- **Claude Code fetches the numbers with its own sign-in.** It renews that sign-in when needed, so you never have to open Claude Code just to keep the rings working. The app never reads, stores or sends a Claude token or cookie.
+- **The checks stay out of your way.** `--safe-mode` keeps your hooks, plugins and MCP servers from starting, and `--no-session-persistence` keeps the checks out of your session history.
+- **Older Claude Code versions work too.** If yours doesn't know one of these options, the app drops it and tries again.
 
-- The token is **only read**. The app never refreshes, rewrites or copies it.
-- macOS may ask once whether Claude Usage can read the Keychain item. Choose **Always Allow**.
-- Claude Code renews its sign-in whenever you use it. If you haven't used it for a while, the sign-in can expire. The app will tell you to run any `claude` command, then carry on automatically.
-
-### claude.ai browser session
-
-Use this if you don't use Claude Code, or if the Claude Code source keeps getting rate-limited.
-
-1. Open <https://claude.ai/settings/usage> in your browser.
-2. Open Developer Tools › Network, reload the page and select the `usage` request.
-3. Copy its **Cookie** request header, or just the `sessionKey` value, and paste it into Settings.
-
-The cookie is stored in your login Keychain and sent only to `claude.ai`. Treat it like a password: anyone with it can use your claude.ai account.
+The app finds `claude` on your shell's PATH and in the usual install locations, such as `~/.local/bin` and `/opt/homebrew/bin`. If yours lives somewhere else, choose it in **Settings › Claude Code**.
 
 ## Privacy and security
 
-- The app only talks to `api.anthropic.com` (Claude Code source) or `claude.ai` (browser session source). It has no analytics, telemetry or update checks.
-- Credentials stay in the macOS Keychain. They're never written to preferences, logs or other files.
-- The source is small and readable. Start with [`UsageClient.swift`](Sources/ClaudeUsageCore/UsageClient.swift) to see every request the app makes.
+- The app makes no network requests of its own. Claude Code does the fetching, with the sign-in it already has.
+- It never reads, stores or sends Claude credentials, tokens or cookies.
+- It has no analytics, telemetry or update checks.
+- The source is small and readable. Start with [`ClaudeCLI.swift`](Sources/ClaudeUsageCore/ClaudeCLI.swift) to see exactly how Claude Code is run.
 
 ## Troubleshooting
 
-**"No Claude Code sign-in found"**
-Run `claude` in Terminal and sign in with your Claude account. Or switch to the claude.ai browser session source.
+**"Couldn't find Claude Code"**
+Install [Claude Code](https://claude.com/claude-code). If it's already installed in an unusual place, choose the `claude` executable in **Settings › Claude Code**. Run `which claude` in Terminal to find it.
 
-**"Your Claude Code sign-in has expired"**
-Run any `claude` command. Claude Code renews the sign-in, and the rings update within a minute.
+**"Claude Code isn't signed in"**
+Run `claude` in Terminal once and sign in with your Claude account. You can quit it afterwards; the rings update within a minute. Your sign-in lasts a long time, but if it ever fully expires, Claude Code needs you to sign in again the same way.
 
-**"Claude is rate-limiting usage requests"**
-Claude limits how often usage can be checked. The app keeps showing the last known values and retries with a growing delay. If it keeps happening, set a longer refresh interval or use the claude.ai source.
-
-**"Claude rejected the credentials" with the claude.ai source**
-Your browser session has expired or been signed out. Copy a fresh cookie into Settings.
+**"Claude Code couldn't fetch your usage"**
+Claude limits how often usage can be checked. The app keeps showing the last known values and retries with a growing delay. If it keeps happening, set a longer refresh interval. Updating Claude Code with `claude update` can also help.
 
 **macOS says the app can't be opened**
 This only happens with a copy you downloaded rather than built yourself. Right-click the app, choose **Open**, or run `xattr -dr com.apple.quarantine "/Applications/Claude Usage.app"`.
@@ -128,7 +122,7 @@ make preview   # render the rings, panel, settings and icon with sample data to 
 You can also open the folder in Xcode (`xed .`), pick the **ClaudeUsage** scheme and press ⌘R.
 
 ```
-Sources/ClaudeUsageCore/   Response parsing, credentials, formatting, refresh scheduling (unit-tested, Foundation only)
+Sources/ClaudeUsageCore/   Running Claude Code, parsing its usage report, formatting, refresh scheduling (unit-tested, Foundation only)
 Sources/ClaudeUsage/       The app: status item, ring renderer, details panel, settings
 Tests/                     XCTest suite for ClaudeUsageCore
 Packaging/Info.plist       App bundle metadata (menu bar only, no Dock icon)
@@ -139,7 +133,7 @@ To build a universal (Apple silicon + Intel) binary, run `UNIVERSAL=1 make app`.
 
 ## Caveats
 
-- Both usage endpoints are internal to Claude's own apps rather than a published API. They can change or rate-limit without notice, and if they change, the rings may stop updating until the app is fixed.
+- The structured usage report Claude Code prints is marked experimental, so its shape may change between Claude Code versions. If it does, the app falls back to reading `/usage`'s text, which has percentages but not reset times.
 - Not affiliated with or endorsed by Anthropic. Claude is a trademark of Anthropic, PBC.
 
 ## License

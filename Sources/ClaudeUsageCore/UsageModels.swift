@@ -1,29 +1,5 @@
 import Foundation
 
-/// Where usage data is read from.
-public enum UsageSourceKind: String, CaseIterable, Identifiable, Sendable {
-    /// The OAuth sign-in that Claude Code stores in the macOS Keychain.
-    case claudeCode
-    /// A claude.ai browser session cookie pasted by the user.
-    case claudeWeb
-
-    public var id: String { rawValue }
-
-    public var displayName: String {
-        switch self {
-        case .claudeCode: return "Claude Code sign-in"
-        case .claudeWeb: return "claude.ai browser session"
-        }
-    }
-
-    public var shortName: String {
-        switch self {
-        case .claudeCode: return "Claude Code"
-        case .claudeWeb: return "claude.ai"
-        }
-    }
-}
-
 /// Stable identifiers for the limit windows Claude reports.
 public enum MeterID {
     public static let session = "five_hour"
@@ -56,6 +32,8 @@ public struct UsageMeter: Equatable, Identifiable, Sendable {
     public let resetsAt: Date?
     /// Position relative to other meters (lower comes first).
     public let sortOrder: Int
+    /// Claude's own reading of how close this limit is, when it gives one.
+    public let severity: MeterLevel?
 
     public init(
         id: String,
@@ -64,7 +42,8 @@ public struct UsageMeter: Equatable, Identifiable, Sendable {
         glyph: String,
         percent: Double,
         resetsAt: Date?,
-        sortOrder: Int
+        sortOrder: Int,
+        severity: MeterLevel? = nil
     ) {
         self.id = id
         self.title = title
@@ -73,11 +52,13 @@ public struct UsageMeter: Equatable, Identifiable, Sendable {
         self.percent = percent.isFinite ? min(max(percent, 0), 100) : 0
         self.resetsAt = resetsAt
         self.sortOrder = sortOrder
+        self.severity = severity
     }
 
     public var fraction: Double { percent / 100 }
 
-    public var level: MeterLevel { MeterLevel(percent: percent) }
+    /// Claude's severity when reported, otherwise derived from the percentage.
+    public var level: MeterLevel { severity ?? MeterLevel(percent: percent) }
 
     public var isPrimary: Bool { MeterID.primary.contains(id) }
 

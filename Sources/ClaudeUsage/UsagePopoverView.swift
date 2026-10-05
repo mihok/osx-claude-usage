@@ -105,11 +105,11 @@ struct UsagePopoverView: View {
     private func footer(now: Date) -> some View {
         HStack(spacing: 4) {
             if let snapshot = store.snapshot {
-                Text("Updated \(UsageFormatting.age(of: snapshot.fetchedAt, now: now)) · \(store.snapshotSource?.shortName ?? "")")
+                Text("Updated \(UsageFormatting.age(of: snapshot.fetchedAt, now: now)) · Claude Code")
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
             } else {
-                Text(settings.dataSource.displayName)
+                Text("Usage from Claude Code")
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
             }
@@ -223,13 +223,7 @@ private struct ErrorBanner: View {
     }
 
     private var needsSettings: Bool {
-        switch error {
-        case .missingCookie, .notSignedIn, .noOrganization:
-            return true
-        case let .unauthorized(source, _, _):
-            return source == .claudeWeb
-        default:
-            return false
-        }
+        if case .cliNotFound = error { return true }
+        return false
     }
 }
