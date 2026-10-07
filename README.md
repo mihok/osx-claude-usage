@@ -15,6 +15,10 @@
 </p>
 
 <p align="center">
+  🐧 On Linux? Try <a href="https://github.com/rogsme/polybar-claude-usage"><b>polybar-claude-usage</b></a> by <a href="https://github.com/rogsme">@rogsme</a>, which puts the same usage in your Polybar.
+</p>
+
+<p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/hero-dark.png">
     <img src="docs/images/hero-light.png" width="580" alt="Four usage rings in the menu bar, with the details panel open below them">
