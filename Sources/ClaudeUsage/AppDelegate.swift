@@ -59,9 +59,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @MainActor
 final class SettingsWindowController {
     private let window: NSWindow
+    private let model: SettingsModel
 
     init(settings: AppSettings, store: UsageStore) {
-        let hosting = NSHostingController(rootView: SettingsView(settings: settings, store: store))
+        model = SettingsModel()
+        let hosting = NSHostingController(rootView: SettingsView(settings: settings, store: store, model: model))
         window = NSWindow(contentViewController: hosting)
         window.title = "Claude Usage Settings"
         window.styleMask = [.titled, .closable]

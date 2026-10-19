@@ -202,7 +202,7 @@ enum PreviewRenderer {
     private static func settingsWindow() throws -> NSBitmapImageRep {
         let settings = AppSettings(defaults: previewDefaults())
         let store = UsageStore(settings: settings, previewSnapshot: sampleSnapshot, planName: "Max")
-        let view = SettingsView(settings: settings, store: store)
+        let view = SettingsView(settings: settings, store: store, model: SettingsModel())
         return try snapshotView(NSHostingView(rootView: view), appearance: .aqua)
     }
 

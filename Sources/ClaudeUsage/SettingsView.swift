@@ -2,21 +2,51 @@ import AppKit
 import ClaudeUsageCore
 import SwiftUI
 
+/// What the Settings window tracks besides the preferences themselves.
+///
+/// Kept in a model object rather than SwiftUI's `@State`: recent SDKs implement `@State` as a
+/// macro, and the Command Line Tools can't expand it, so the app wouldn't build without Xcode.
+@MainActor
+final class SettingsModel: ObservableObject {
+    /// Where Claude Code was found, or nil if it wasn't; empty string while looking.
+    @Published private(set) var detectedClaudePath: String? = ""
+    @Published private(set) var launchAtLogin = LaunchAtLogin.isEnabled
+    @Published private(set) var launchAtLoginMessage: String?
+
+    func detectClaude(customPath: String) async {
+        detectedClaudePath = ""
+        let found = await Task.detached(priority: .utility) {
+            try? ClaudeCLI.resolve(customPath: customPath, shell: UsageStore.loginShell, workingDirectory: nil)
+        }.value
+        // A newer lookup has started if the path changed meanwhile.
+        guard !Task.isCancelled else { return }
+        detectedClaudePath = found?.executable.path
+    }
+
+    func setLaunchAtLogin(_ enabled: Bool) {
+        do {
+            try LaunchAtLogin.setEnabled(enabled)
+            launchAtLoginMessage = LaunchAtLogin.requiresApproval
+                ? "Allow Claude Usage in System Settings › General › Login Items."
+                : nil
+        } catch {
+            launchAtLoginMessage = error.localizedDescription
+        }
+        launchAtLogin = LaunchAtLogin.isEnabled
+    }
+}
+
 struct SettingsView: View {
     @ObservedObject var settings: AppSettings
     @ObservedObject var store: UsageStore
-
-    /// Where Claude Code was found, or nil if it wasn't; empty string while looking.
-    @State private var detectedClaudePath: String? = ""
-    @State private var launchAtLogin = LaunchAtLogin.isEnabled
-    @State private var launchAtLoginMessage: String?
+    @ObservedObject var model: SettingsModel
 
     var body: some View {
         Form {
             Section {
                 LabeledContent("Found at") {
                     Text(detectedClaudeDescription)
-                        .foregroundColor(detectedClaudePath == nil ? Color.red : Color.secondary)
+                        .foregroundColor(model.detectedClaudePath == nil ? Color.red : Color.secondary)
                         .textSelection(.enabled)
                         .lineLimit(1)
                         .truncationMode(.middle)
@@ -32,7 +62,7 @@ struct SettingsView: View {
             } header: {
                 Text("Claude Code")
             }
-            .task(id: settings.claudePath) { await detectClaude() }
+            .task(id: settings.claudePath) { await model.detectClaude(customPath: settings.claudePath) }
 
             Section {
                 ForEach(meterChoices, id: \.id) { choice in
@@ -63,10 +93,10 @@ struct SettingsView: View {
                     }
                 }
                 Toggle("Launch at login", isOn: Binding(
-                    get: { launchAtLogin },
-                    set: { setLaunchAtLogin($0) }
+                    get: { model.launchAtLogin },
+                    set: { model.setLaunchAtLogin($0) }
                 ))
-                if let launchAtLoginMessage {
+                if let launchAtLoginMessage = model.launchAtLoginMessage {
                     Text(launchAtLoginMessage)
                         .font(.callout)
                         .foregroundColor(.secondary)
@@ -87,20 +117,11 @@ struct SettingsView: View {
     // MARK: - Claude Code location
 
     private var detectedClaudeDescription: String {
-        switch detectedClaudePath {
+        switch model.detectedClaudePath {
         case .none: return settings.claudePath.isEmpty ? "Not found" : "Nothing runnable at that location"
         case .some(""): return "Looking…"
         case let .some(path): return (path as NSString).abbreviatingWithTildeInPath
         }
-    }
-
-    private func detectClaude() async {
-        detectedClaudePath = ""
-        let customPath = settings.claudePath
-        let found = await Task.detached(priority: .utility) {
-            try? ClaudeCLI.resolve(customPath: customPath, shell: UsageStore.loginShell, workingDirectory: nil)
-        }.value
-        detectedClaudePath = found?.executable.path
     }
 
     private func chooseClaude() {
@@ -134,18 +155,6 @@ struct SettingsView: View {
             MeterChoice(id: MeterID.session, title: "Session"),
             MeterChoice(id: MeterID.weekly, title: "Weekly"),
         ]
-    }
-
-    private func setLaunchAtLogin(_ enabled: Bool) {
-        do {
-            try LaunchAtLogin.setEnabled(enabled)
-            launchAtLoginMessage = LaunchAtLogin.requiresApproval
-                ? "Allow Claude Usage in System Settings › General › Login Items."
-                : nil
-        } catch {
-            launchAtLoginMessage = error.localizedDescription
-        }
-        launchAtLogin = LaunchAtLogin.isEnabled
     }
 
     private static let thresholdFootnote =
