@@ -155,6 +155,8 @@ final class UsageStore: ObservableObject {
                 diagnostics.executable = cli.executable.path
                 diagnostics.version = cli.version
                 diagnostics.usedLoginShellEnvironment = cli.usesLoginShellEnvironment
+                diagnostics.removedCredentialVariables = cli.removedCredentialVariables
+                diagnostics.shellCommand = cli.shellCommand
 
                 let snapshot: UsageSnapshot
                 do {
@@ -168,10 +170,21 @@ final class UsageStore: ObservableObject {
                     // temporary problem and goes into the diagnostics.
                     let status = try? cli.authStatus()
                     diagnostics.authStatus = status
-                    if case .usageUnavailable = error, let status, !status.loggedIn {
-                        throw UsageError.notSignedIn
+                    let signedOut: Bool
+                    switch error {
+                    case .notSignedIn: signedOut = true
+                    case .usageUnavailable: signedOut = status?.loggedIn == false
+                    default: signedOut = false
                     }
-                    throw error
+                    guard signedOut else { throw error }
+                    // Claude Code may well work in Terminal; say why it doesn't here.
+                    let keychain = cli.keychainSignIn()
+                    diagnostics.keychainSignIn = keychain
+                    throw UsageError.signInProblem(
+                        removedCredentialVariables: cli.removedCredentialVariables,
+                        shellCommand: cli.shellCommand,
+                        keychain: keychain
+                    )
                 }
                 var plan: String?
                 if needsPlan {

@@ -47,7 +47,7 @@ These are the same numbers shown by `/usage` in Claude Code and on **claude.ai �
 You'll need:
 
 - macOS 13 Ventura or later
-- [Claude Code](https://claude.com/claude-code), signed in once with your Claude Pro, Max, Team or Enterprise account (run `claude` and follow the prompts)
+- [Claude Code](https://claude.com/claude-code), signed in once with your Claude Pro, Max, Team or Enterprise account (run `claude auth login`)
 - Xcode 15+ or the Xcode Command Line Tools (Swift 5.9+) to build
 
 ```sh
@@ -90,12 +90,13 @@ claude -p /usage --output-format stream-json --verbose --no-session-persistence 
 - **The checks stay out of your way.** `--safe-mode` keeps your hooks, plugins and MCP servers from starting, and `--no-session-persistence` keeps the checks out of your session history.
 - **It never runs without those options.** If your Claude Code is too old to know them, the app asks you to update it instead.
 
-Claude Code runs with the same environment your shell gives it in Terminal (minus any API keys, so your subscription is what's measured). The app looks for `claude` on that PATH and in the usual install locations, such as `~/.local/bin` and `/opt/homebrew/bin`, and uses the newest one it finds. To use a different one, choose it in **Settings › Claude Code**.
+Claude Code runs with the same environment your shell gives it in Terminal, minus `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN`. An API key or token can't report your plan's usage, so Claude Code uses your Claude account's sign-in instead. The app looks for `claude` on that PATH and in the usual install locations, such as `~/.local/bin` and `/opt/homebrew/bin`, and uses the newest one it finds. To use a different one, choose it in **Settings › Claude Code**.
 
 ## Privacy and security
 
 - The app makes no network requests of its own. Claude Code does the fetching, with the sign-in it already has.
 - It never reads, stores or sends Claude credentials, tokens or cookies.
+- If Claude Code says it isn't signed in, the app checks whether Claude Code's sign-in is in your Keychain, to explain why. It only asks whether the entry exists and never reads it.
 - It has no analytics, telemetry or update checks.
 - The source is small and readable. Start with [`ClaudeCLI.swift`](Sources/ClaudeUsageCore/ClaudeCLI.swift) to see exactly how Claude Code is run.
 
@@ -105,21 +106,36 @@ Claude Code runs with the same environment your shell gives it in Terminal (minu
 Install [Claude Code](https://claude.com/claude-code). If it's already installed in an unusual place, choose the `claude` executable in **Settings › Claude Code**. Run `which claude` in Terminal to find it.
 
 **"Claude Code isn't signed in"**
-Run `claude` in Terminal once and sign in with your Claude account. You can quit it afterwards; the rings update within a minute. Your sign-in lasts a long time, but if it ever fully expires, Claude Code needs you to sign in again the same way.
+Run `claude auth login` in Terminal and sign in with your Claude account. Claude Code doesn't need to stay open; the rings update within a minute. Your sign-in lasts a long time, but if it ever fully expires, sign in again the same way.
 
 If `claude` already works in Terminal, the app may have found a different install. **Settings › Claude Code** shows which `claude` it uses and its version; compare that with `which claude` and `claude --version` in Terminal, and choose the right one if they differ. The app runs Claude Code with your shell's environment, so restart the app after changing your shell profile.
 
+**"In Terminal, Claude Code signs in with CLAUDE_CODE_OAUTH_TOKEN"** (or `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`)
+Your shell profile signs Claude Code in with a token or API key. Neither can report your plan's usage, so the app leaves them out, and Claude Code then has no sign-in of its own. Sign in once with your Claude account, leaving the variable out:
+
+```sh
+env -u CLAUDE_CODE_OAUTH_TOKEN claude auth login
+```
+
+The variable stays set, so Claude Code in Terminal keeps working as before.
+
+**"In Terminal, `claude` is an alias"** (or a shell function)
+An alias or function can run Claude Code with other settings, such as a different `CLAUDE_CONFIG_DIR`. Run `type claude` to see what it does. To sign in without it, run `command claude auth login`. If it sets `CLAUDE_CONFIG_DIR`, `export` that in your shell profile instead so the app uses it too, then restart Claude Usage.
+
+**"Claude Code couldn't read its sign-in from the Keychain"**
+Your Keychain has Claude Code's sign-in, but Claude Code couldn't read it when the app started it. Make sure your login keychain is unlocked, or run `claude auth login` to save the sign-in again.
+
 **"Claude Code … is too old to report usage"**
 Run `claude update`, or choose a newer install in **Settings › Claude Code**.
-
-**Anything else**
-Click **Copy Diagnostics** in the error message or in Settings and paste it into an issue. It lists which `claude` ran, its version, whether it's signed in and what it printed. It contains no email address or token.
 
 **"Claude Code couldn't fetch your usage"**
 Claude limits how often usage can be checked. The app keeps showing the last known values and retries with a growing delay. If it keeps happening, set a longer refresh interval. Updating Claude Code with `claude update` can also help.
 
 **macOS says the app can't be opened**
 This only happens with a copy you downloaded rather than built yourself. Right-click the app, choose **Open**, or run `xattr -dr com.apple.quarantine "/Applications/Claude Usage.app"`.
+
+**Anything else**
+Click **Copy Diagnostics** in the error message or in Settings and paste it into an issue. It lists which `claude` ran, its version, whether it's signed in, which sign-in variables your shell sets (names only) and what Claude Code printed. It contains no email address, token or key.
 
 ## Development
 

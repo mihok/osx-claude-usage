@@ -203,8 +203,12 @@ final class ClaudeCLITests: XCTestCase {
         echo '{"loggedIn": true, "authMethod": "claude.ai", "apiProvider": "firstParty", "subscriptionType": "max"}'
         """)
         let status = try ClaudeCLI(executable: claude, environment: Self.environment, timeout: 20).authStatus()
-        XCTAssertEqual(status, ClaudeAuthStatus(loggedIn: true, authMethod: "claude.ai", subscriptionType: "max"))
+        XCTAssertEqual(status, ClaudeAuthStatus(loggedIn: true, authMethod: "claude.ai", subscriptionType: "max", apiProvider: "firstParty"))
         XCTAssertEqual(status.planName, "Max")
+
+        let signedOut = try ClaudeAuthStatus.parse(#"{"loggedIn":false,"authMethod":"none","apiProvider":"firstParty","configDirectory":"/Users/me/.claude","email":"me@example.com"}"#)
+        XCTAssertEqual(signedOut.configDirectory, "/Users/me/.claude")
+        XCTAssertNil(signedOut.apiKeySource)
 
         XCTAssertFalse(try ClaudeAuthStatus.parse(#"{"loggedIn":false,"authMethod":"none"}"#).loggedIn)
         XCTAssertThrowsError(try ClaudeAuthStatus.parse("command not found"))
@@ -256,6 +260,7 @@ final class ClaudeCLITests: XCTestCase {
         XCTAssertEqual(cli.version, "999.0.0")
         XCTAssertFalse(cli.usesLoginShellEnvironment)
         XCTAssertNil(cli.environment["ANTHROPIC_API_KEY"])
+        XCTAssertEqual(cli.removedCredentialVariables, ["ANTHROPIC_API_KEY"])
 
         // A chosen path is used as is, even when it's older.
         let chosen = try ClaudeCLI.resolve(
@@ -302,17 +307,87 @@ final class ClaudeCLITests: XCTestCase {
         }
     }
 
-    func testLoginShellEnvironment() throws {
-        // Stands in for `zsh -i -l -c …`: profile noise, then `env -0` between the markers.
+    func testLoginShell() throws {
+        // Stands in for `zsh -i -l -c …`: profile noise, `env -0` and `type claude` between markers.
         let shell = try fakeClaude(
-            #"printf 'noise from a profile\n__CLAUDE_USAGE_ENV__HOME=/Users/me\0PATH=/opt/a:/opt/b\0CLAUDE_CONFIG_DIR=/Users/me/.claude-work\0MULTI=line1\nline2\0__CLAUDE_USAGE_ENV__'"#
+            #"printf 'noise from a profile\n__CLAUDE_USAGE_ENV__HOME=/Users/me\0PATH=/opt/a:/opt/b\0CLAUDE_CONFIG_DIR=/Users/me/.claude-work\0MULTI=line1\nline2\0__CLAUDE_USAGE_ENV__claude is an alias for ANTHROPIC_API_KEY=sk-secret claude\n__CLAUDE_USAGE_ENV__bye from .zlogout\n'"#
         )
-        let environment = try XCTUnwrap(ClaudeCLI.loginShellEnvironment(shell: shell.path))
-        XCTAssertEqual(environment["PATH"], "/opt/a:/opt/b")
-        XCTAssertEqual(environment["CLAUDE_CONFIG_DIR"], "/Users/me/.claude-work")
-        XCTAssertEqual(environment["MULTI"], "line1\nline2")
+        let loginShell = try XCTUnwrap(ClaudeCLI.loginShell(shell.path))
+        XCTAssertEqual(loginShell.environment["PATH"], "/opt/a:/opt/b")
+        XCTAssertEqual(loginShell.environment["CLAUDE_CONFIG_DIR"], "/Users/me/.claude-work")
+        XCTAssertEqual(loginShell.environment["MULTI"], "line1\nline2")
+        XCTAssertEqual(loginShell.claudeCommand, .alias)
 
-        XCTAssertNil(ClaudeCLI.loginShellEnvironment(shell: try fakeClaude("echo nothing useful").path))
+        // A shell that stops after the environment still gives it.
+        let partial = try fakeClaude(#"printf '__CLAUDE_USAGE_ENV__HOME=/h\0PATH=/p\0__CLAUDE_USAGE_ENV__'"#)
+        XCTAssertEqual(ClaudeCLI.loginShell(partial.path), LoginShell(environment: ["HOME": "/h", "PATH": "/p"]))
+
+        XCTAssertNil(ClaudeCLI.loginShell(try fakeClaude("echo nothing useful").path))
+    }
+
+    func testShellCommandKind() {
+        // zsh
+        XCTAssertEqual(ShellCommandKind.parse(typeOutput: "claude is an alias for CLAUDE_CONFIG_DIR=~/.claude-work claude\n"), .alias)
+        XCTAssertEqual(ShellCommandKind.parse(typeOutput: "claude is a shell function from /Users/me/.zshrc\n"), .function)
+        XCTAssertEqual(ShellCommandKind.parse(typeOutput: "claude is /Users/me/.local/bin/claude\n"), .file("/Users/me/.local/bin/claude"))
+        XCTAssertEqual(ShellCommandKind.parse(typeOutput: "claude not found\n"), .notFound)
+        // bash
+        XCTAssertEqual(ShellCommandKind.parse(typeOutput: "claude is aliased to `claude --model opus'\n"), .alias)
+        XCTAssertEqual(ShellCommandKind.parse(typeOutput: "claude is a function\nclaude () \n{ \n    command claude \"$@\"\n}\n"), .function)
+        XCTAssertEqual(ShellCommandKind.parse(typeOutput: "claude is hashed (/opt/homebrew/bin/claude)\n"), .file("/opt/homebrew/bin/claude"))
+        // fish
+        XCTAssertEqual(ShellCommandKind.parse(typeOutput: "claude is a function with definition\n# Defined in ~/.config/fish/config.fish\n"), .function)
+        XCTAssertNil(ShellCommandKind.parse(typeOutput: ""))
+        XCTAssertNil(ShellCommandKind.parse(typeOutput: "claude is a reserved word\n"))
+
+        XCTAssertEqual(ShellCommandKind.alias.description, "an alias")
+        XCTAssertEqual(ShellCommandKind.file("/opt/homebrew/bin/claude").description, "/opt/homebrew/bin/claude")
+    }
+
+    /// Writes a stand-in for `/usr/bin/security` that records its arguments and exits with `status`.
+    private func fakeSecurity(exitingWith status: Int32) throws -> (tool: URL, arguments: URL) {
+        let folder = directory.appendingPathComponent("security-\(status)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let arguments = folder.appendingPathComponent("arguments.txt")
+        let tool = folder.appendingPathComponent("security")
+        try Data("#!/bin/sh\nprintf '%s\\n' \"$@\" > '\(arguments.path)'\necho 'keychain: \"/Users/me/Library/Keychains/login.keychain-db\"'\nexit \(status)\n".utf8).write(to: tool)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tool.path)
+        return (tool, arguments)
+    }
+
+    func testKeychainSignIn() throws {
+        let claude = URL(fileURLWithPath: "/usr/local/bin/claude")
+        let environment = ["PATH": "/usr/bin:/bin", "USER": "me"]
+
+        let found = try fakeSecurity(exitingWith: 0)
+        XCTAssertEqual(ClaudeCLI(executable: claude, environment: environment).keychainSignIn(security: found.tool), .found)
+        // Asks only whether the entry exists: no -w or -g, which would print the token.
+        XCTAssertEqual(
+            try String(contentsOf: found.arguments, encoding: .utf8),
+            "find-generic-password\n-a\nme\n-s\nClaude Code-credentials\n"
+        )
+
+        let missing = try fakeSecurity(exitingWith: 44)
+        XCTAssertEqual(ClaudeCLI(executable: claude, environment: environment).keychainSignIn(security: missing.tool), .missing)
+        let locked = try fakeSecurity(exitingWith: 36)
+        XCTAssertEqual(ClaudeCLI(executable: claude, environment: environment).keychainSignIn(security: locked.tool), .unknown(36))
+
+        // A custom settings folder changes the entry's name, so it isn't guessed.
+        var custom = environment
+        custom["CLAUDE_CONFIG_DIR"] = "/Users/me/.claude-work"
+        XCTAssertNil(ClaudeCLI(executable: claude, environment: custom).keychainSignIn(security: found.tool))
+        custom["CLAUDE_SECURESTORAGE_CONFIG_DIR"] = ""
+        XCTAssertEqual(ClaudeCLI(executable: claude, environment: custom).keychainSignIn(security: found.tool), .found)
+
+        XCTAssertNil(ClaudeCLI(executable: claude, environment: environment)
+            .keychainSignIn(security: directory.appendingPathComponent("no-security")))
+    }
+
+    func testKeychainAccountName() {
+        XCTAssertEqual(KeychainSignIn.account(environment: ["USER": "me"], userName: "other"), "me")
+        XCTAssertEqual(KeychainSignIn.account(environment: [:], userName: "first.last"), "first.last")
+        XCTAssertEqual(KeychainSignIn.account(environment: ["USER": "me & you"], userName: "x"), "claude-code-user")
+        XCTAssertEqual(KeychainSignIn.unknown(36).description, "couldn't check (security exited 36)")
     }
 
     func testParseEnvironment() {
@@ -340,6 +415,7 @@ final class ClaudeDiagnosticsTests: XCTestCase {
         diagnostics.error = UsageError.notSignedIn.localizedDescription
 
         XCTAssertEqual(diagnostics.cliDescription, "claude 2.1.303 at ~/.local/bin/claude")
+        XCTAssertFalse(diagnostics.report(appVersion: "1.0.0").contains("Keychain"))
         XCTAssertEqual(diagnostics.report(appVersion: "1.0.0"), """
         Claude Usage 1.0.0
         Checked: 2026-10-04T15:14:00Z
@@ -355,9 +431,80 @@ final class ClaudeDiagnosticsTests: XCTestCase {
         """)
     }
 
+    func testReportsHowTerminalSignsIn() {
+        var diagnostics = ClaudeDiagnostics(checkedAt: Date(timeIntervalSince1970: 1_791_126_840))
+        diagnostics.executable = "/opt/homebrew/bin/claude"
+        diagnostics.usedLoginShellEnvironment = true
+        diagnostics.removedCredentialVariables = ["CLAUDE_CODE_OAUTH_TOKEN"]
+        diagnostics.shellCommand = .alias
+        diagnostics.authStatus = ClaudeAuthStatus(
+            loggedIn: false, authMethod: "none", subscriptionType: nil,
+            configDirectory: NSHomeDirectory() + "/.claude", apiProvider: "firstParty"
+        )
+        diagnostics.keychainSignIn = .missing
+
+        XCTAssertEqual(diagnostics.report(appVersion: "1.0.1"), """
+        Claude Usage 1.0.1
+        Checked: 2026-10-04T15:14:00Z
+        Claude Code: claude at /opt/homebrew/bin/claude
+        Environment: login shell (as in Terminal)
+        Sign-in variables left out: CLAUDE_CODE_OAUTH_TOKEN
+        In Terminal, claude is: an alias
+        Signed in: no (none)
+        Settings folder: ~/.claude
+        Keychain sign-in: not found
+        """)
+
+        diagnostics.removedCredentialVariables = []
+        XCTAssertTrue(diagnostics.report(appVersion: "1.0.1").contains("Sign-in variables left out: none\n"))
+    }
+
     func testAbbreviatesHome() {
         XCTAssertEqual(ClaudeDiagnostics.abbreviatingHome(in: "/Users/me/.local/bin/claude", home: "/Users/me"), "~/.local/bin/claude")
         XCTAssertEqual(ClaudeDiagnostics.abbreviatingHome(in: "/Users/meg/claude", home: "/Users/me"), "/Users/meg/claude")
         XCTAssertEqual(ClaudeDiagnostics.abbreviatingHome(in: "/opt/homebrew/bin/claude", home: "/Users/me"), "/opt/homebrew/bin/claude")
+    }
+}
+
+final class SignInProblemTests: XCTestCase {
+    func testPicksTheLikeliestReason() {
+        XCTAssertEqual(
+            UsageError.signInProblem(removedCredentialVariables: [], shellCommand: .file("/opt/homebrew/bin/claude"), keychain: .missing),
+            .notSignedIn
+        )
+        XCTAssertEqual(
+            UsageError.signInProblem(removedCredentialVariables: ["CLAUDE_CODE_OAUTH_TOKEN"], shellCommand: .alias, keychain: .missing),
+            .signedInOnlyInTerminal(.variables(["CLAUDE_CODE_OAUTH_TOKEN"]))
+        )
+        XCTAssertEqual(
+            UsageError.signInProblem(removedCredentialVariables: [], shellCommand: .function, keychain: nil),
+            .signedInOnlyInTerminal(.wrapper(.function))
+        )
+        // A saved sign-in Claude Code couldn't read explains more than the shell's setup.
+        XCTAssertEqual(
+            UsageError.signInProblem(removedCredentialVariables: ["ANTHROPIC_API_KEY"], shellCommand: .alias, keychain: .found),
+            .signedInOnlyInTerminal(.keychainUnreadable)
+        )
+        XCTAssertTrue(UsageError.signedInOnlyInTerminal(.keychainUnreadable).isLocal)
+    }
+
+    func testExplainsHowToSignIn() {
+        let token = UsageError.signedInOnlyInTerminal(.variables(["CLAUDE_CODE_OAUTH_TOKEN"]))
+        XCTAssertEqual(token.errorDescription, "In Terminal, Claude Code signs in with CLAUDE_CODE_OAUTH_TOKEN, which can't report plan usage.")
+        XCTAssertEqual(
+            token.recoverySuggestion,
+            "Sign in once with your Claude account: run `env -u CLAUDE_CODE_OAUTH_TOKEN claude auth login` in Terminal. "
+                + "CLAUDE_CODE_OAUTH_TOKEN stays set, so Terminal keeps working as before."
+        )
+
+        let both = UsageError.signedInOnlyInTerminal(.variables(["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]))
+        XCTAssertEqual(both.errorDescription, "In Terminal, Claude Code signs in with ANTHROPIC_API_KEY and CLAUDE_CODE_OAUTH_TOKEN, which can't report plan usage.")
+        XCTAssertTrue(both.recoverySuggestion?.contains("`env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN claude auth login`") == true)
+
+        let alias = UsageError.signedInOnlyInTerminal(.wrapper(.alias))
+        XCTAssertEqual(alias.errorDescription, "Claude Code isn't signed in. In Terminal, `claude` is an alias, which may sign it in another way.")
+        XCTAssertTrue(alias.recoverySuggestion?.hasPrefix("Run `command claude auth login` in Terminal (`command` skips the alias)") == true)
+
+        XCTAssertEqual(UsageError.list(["A", "B", "C"]), "A, B and C")
     }
 }

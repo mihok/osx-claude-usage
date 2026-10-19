@@ -217,6 +217,8 @@ private struct ErrorBanner: View {
                         .font(.system(size: 11))
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
+                        // So the Terminal command in it can be copied.
+                        .textSelection(.enabled)
                 }
                 if let checked = diagnostics?.cliDescription {
                     Text("Checked \(checked)")

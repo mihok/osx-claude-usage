@@ -11,6 +11,10 @@ public struct ClaudeCLI: Sendable {
     public let version: String?
     /// Whether `environment` came from the user's login shell, as in Terminal.
     public let usesLoginShellEnvironment: Bool
+    /// Sign-in variables the shell sets that were left out of `environment`. Names only.
+    public let removedCredentialVariables: [String]
+    /// What `claude` is in the login shell, e.g. an alias.
+    public let shellCommand: ShellCommandKind?
     public var environment: [String: String]
     public var workingDirectory: URL?
     public var timeout: TimeInterval
@@ -19,6 +23,8 @@ public struct ClaudeCLI: Sendable {
         executable: URL,
         version: String? = nil,
         usesLoginShellEnvironment: Bool = false,
+        removedCredentialVariables: [String] = [],
+        shellCommand: ShellCommandKind? = nil,
         environment: [String: String],
         workingDirectory: URL? = nil,
         timeout: TimeInterval = 90
@@ -26,6 +32,8 @@ public struct ClaudeCLI: Sendable {
         self.executable = executable
         self.version = version
         self.usesLoginShellEnvironment = usesLoginShellEnvironment
+        self.removedCredentialVariables = removedCredentialVariables
+        self.shellCommand = shellCommand
         self.environment = environment
         self.workingDirectory = workingDirectory
         self.timeout = timeout
@@ -103,7 +111,8 @@ public struct ClaudeCLI: Sendable {
         baseEnvironment: [String: String] = ProcessInfo.processInfo.environment,
         home: URL = FileManager.default.homeDirectoryForCurrentUser
     ) throws -> ClaudeCLI {
-        let shellEnvironment = shell.flatMap { ShellEnvironment.cached(for: $0) }
+        let loginShell = shell.flatMap { ShellEnvironment.cached(for: $0) }
+        let shellEnvironment = loginShell?.environment
         let base = shellEnvironment ?? baseEnvironment
         let searchPath = [shellEnvironment?["PATH"], baseEnvironment["PATH"]]
             .compactMap { $0 }
@@ -127,6 +136,8 @@ public struct ClaudeCLI: Sendable {
             executable: chosen.0,
             version: chosen.1,
             usesLoginShellEnvironment: shellEnvironment != nil,
+            removedCredentialVariables: credentialVariables.filter { !(base[$0] ?? "").isEmpty },
+            shellCommand: loginShell?.claudeCommand,
             environment: environment(base: base, executable: chosen.0),
             workingDirectory: workingDirectory
         )
@@ -180,20 +191,23 @@ public struct ClaudeCLI: Sendable {
         locateAll(customPath: customPath, searchPath: searchPath, home: home, fileManager: fileManager).first
     }
 
-    /// The environment an interactive login shell sets up: what `claude` sees when run in
-    /// Terminal, including anything set in `.zshrc` such as `CLAUDE_CONFIG_DIR` or PATH additions.
-    /// Blocking; nil if the shell doesn't answer.
-    public static func loginShellEnvironment(shell: String) -> [String: String]? {
+    /// What an interactive login shell sets up: the environment `claude` sees when run in
+    /// Terminal, including anything set in `.zshrc` such as `CLAUDE_CONFIG_DIR` or PATH additions,
+    /// and what `claude` itself is there. Blocking; nil if the shell doesn't answer.
+    public static func loginShell(_ shell: String) -> LoginShell? {
         let marker = "__CLAUDE_USAGE_ENV__"
         guard let result = try? ProcessRunner.run(
             URL(fileURLWithPath: shell),
-            arguments: ["-i", "-l", "-c", "printf '\(marker)'; /usr/bin/env -0; printf '\(marker)'"],
+            arguments: ["-i", "-l", "-c", "printf '\(marker)'; /usr/bin/env -0; printf '\(marker)'; type claude; printf '\(marker)'"],
             timeout: 15
         ), !result.timedOut else { return nil }
         // Profile scripts can print their own output; take only what sits between the markers.
         let parts = result.stdoutText.components(separatedBy: marker)
-        guard parts.count >= 3 else { return nil }
-        return parseEnvironment(parts[parts.count - 2])
+        guard parts.count >= 3, let environment = parseEnvironment(parts[1]) else { return nil }
+        return LoginShell(
+            environment: environment,
+            claudeCommand: parts.count >= 4 ? ShellCommandKind.parse(typeOutput: parts[2]) : nil
+        )
     }
 
     /// Parses `env -0` output (NUL-separated `NAME=value` entries), or plain `env` output if the
@@ -213,12 +227,12 @@ public struct ClaudeCLI: Sendable {
         return environment
     }
 
-    /// Variables that would make Claude Code bill an API key instead of reporting plan usage, or
-    /// that only describe the shell the environment was captured from.
-    static let removedVariables: Set<String> = [
-        "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
-        "PWD", "OLDPWD", "SHLVL", "_",
-    ]
+    /// Variables that sign Claude Code in with an API key or token instead of the user's Claude
+    /// account. Neither can report a plan's usage, and a key would be billed.
+    public static let credentialVariables = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"]
+
+    /// The sign-in variables, and those that only describe the shell the environment was captured from.
+    static let removedVariables = Set(credentialVariables).union(["PWD", "OLDPWD", "SHLVL", "_"])
 
     /// The environment Claude Code runs with: `base` (normally the login shell's) without API keys,
     /// with a PATH covering Claude Code's own directory and the usual install locations.
@@ -236,23 +250,75 @@ public struct ClaudeCLI: Sendable {
     }
 }
 
-/// Remembers each login shell's environment; starting an interactive shell takes a moment.
+/// How the user's login shell runs `claude`.
+public struct LoginShell: Equatable, Sendable {
+    public var environment: [String: String]
+    /// What `claude` is there, from `type claude`.
+    public var claudeCommand: ShellCommandKind?
+
+    public init(environment: [String: String], claudeCommand: ShellCommandKind? = nil) {
+        self.environment = environment
+        self.claudeCommand = claudeCommand
+    }
+}
+
+/// What `claude` is in a shell. An alias or function can run Claude Code with other settings than
+/// the app uses. Only the kind is kept, never the alias or function itself: it may hold a key.
+public enum ShellCommandKind: Equatable, Sendable, CustomStringConvertible {
+    case alias
+    case function
+    case file(String)
+    case notFound
+
+    /// Reads `type claude` as zsh, bash or fish print it.
+    static func parse(typeOutput: String) -> ShellCommandKind? {
+        let line = typeOutput
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .first { !$0.isEmpty } ?? ""
+        let prefix = "claude is "
+        guard line.hasPrefix(prefix) else {
+            let lowered = line.lowercased()
+            return lowered.contains("not found") || lowered.contains("could not find") ? .notFound : nil
+        }
+        let rest = line.dropFirst(prefix.count)
+        if rest.hasPrefix("an alias") || rest.hasPrefix("aliased") { return .alias }
+        if rest.contains("function") { return .function }
+        if rest.hasPrefix("hashed ("), let end = rest.lastIndex(of: ")") {
+            return .file(String(rest[rest.index(rest.startIndex, offsetBy: "hashed (".count)..<end]))
+        }
+        if rest.hasPrefix("/") { return .file(String(rest)) }
+        return nil
+    }
+
+    /// "an alias", "~/.local/bin/claude".
+    public var description: String {
+        switch self {
+        case .alias: return "an alias"
+        case .function: return "a shell function"
+        case let .file(path): return ClaudeDiagnostics.abbreviatingHome(in: path)
+        case .notFound: return "not found"
+        }
+    }
+}
+
+/// Remembers each login shell's setup; starting an interactive shell takes a moment.
 private enum ShellEnvironment {
     private static let lock = NSLock()
-    private static var environments: [String: [String: String]?] = [:]
+    private static var shells: [String: LoginShell?] = [:]
 
-    static func cached(for shell: String) -> [String: String]? {
+    static func cached(for shell: String) -> LoginShell? {
         lock.lock()
-        if let known = environments[shell] {
+        if let known = shells[shell] {
             lock.unlock()
             return known
         }
         lock.unlock()
-        let environment = ClaudeCLI.loginShellEnvironment(shell: shell)
+        let loginShell = ClaudeCLI.loginShell(shell)
         lock.lock()
-        environments[shell] = environment
+        shells[shell] = loginShell
         lock.unlock()
-        return environment
+        return loginShell
     }
 }
 
@@ -311,11 +377,34 @@ enum ClaudeVersion {
     }
 }
 
-/// The parts of `claude auth status --json` the app uses.
+/// The parts of `claude auth status --json` the app uses. The email address and organization it
+/// also prints are left out.
 public struct ClaudeAuthStatus: Equatable, Sendable {
     public let loggedIn: Bool
     public let authMethod: String?
     public let subscriptionType: String?
+    /// The folder Claude Code keeps its settings in, e.g. ~/.claude.
+    public let configDirectory: String?
+    /// "firstParty", "bedrock", …
+    public let apiProvider: String?
+    /// Where an API key came from, by name, e.g. "apiKeyHelper".
+    public let apiKeySource: String?
+
+    public init(
+        loggedIn: Bool,
+        authMethod: String?,
+        subscriptionType: String?,
+        configDirectory: String? = nil,
+        apiProvider: String? = nil,
+        apiKeySource: String? = nil
+    ) {
+        self.loggedIn = loggedIn
+        self.authMethod = authMethod
+        self.subscriptionType = subscriptionType
+        self.configDirectory = configDirectory
+        self.apiProvider = apiProvider
+        self.apiKeySource = apiKeySource
+    }
 
     public var planName: String? { PlanName.from(subscriptionType: subscriptionType) }
 
@@ -328,7 +417,10 @@ public struct ClaudeAuthStatus: Equatable, Sendable {
         return ClaudeAuthStatus(
             loggedIn: JSONValue.bool(json["loggedIn"]) ?? false,
             authMethod: JSONValue.string(json["authMethod"]),
-            subscriptionType: JSONValue.string(json["subscriptionType"])
+            subscriptionType: JSONValue.string(json["subscriptionType"]),
+            configDirectory: JSONValue.string(json["configDirectory"]),
+            apiProvider: JSONValue.string(json["apiProvider"]),
+            apiKeySource: JSONValue.string(json["apiKeySource"])
         )
     }
 }
