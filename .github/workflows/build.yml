@@ -19,8 +19,8 @@ jobs:
       - name: Test
         run: swift test
 
-      - name: Build app (universal)
-        run: UNIVERSAL=1 scripts/build-app.sh
+      - name: Build disk image (universal app)
+        run: scripts/make-dmg.sh
 
       - name: Check bundle
         run: |
@@ -33,13 +33,10 @@ jobs:
           "build/Claude Usage.app/Contents/MacOS/ClaudeUsage" --render-preview build/preview
           ls -la build/preview
 
-      - name: Package
-        run: ditto -c -k --keepParent "build/Claude Usage.app" "build/Claude-Usage.zip"
-
       - uses: actions/upload-artifact@v4
         with:
           name: Claude-Usage
-          path: build/Claude-Usage.zip
+          path: build/Claude-Usage.dmg
 
       - uses: actions/upload-artifact@v4
         with:

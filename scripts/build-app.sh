@@ -2,7 +2,7 @@
 # Builds "Claude Usage.app" into ./build.
 #
 #   scripts/build-app.sh               # release build for this Mac's architecture
-#   UNIVERSAL=1 scripts/build-app.sh   # arm64 + x86_64 (needs full Xcode)
+#   UNIVERSAL=1 scripts/build-app.sh   # one app for Apple silicon and Intel Macs
 #   CODESIGN_IDENTITY="Developer ID Application: …" scripts/build-app.sh
 set -euo pipefail
 
@@ -15,19 +15,29 @@ VERSION="${VERSION:-$(tr -d '[:space:]' < VERSION)}"
 BUILD_NUMBER="${BUILD_NUMBER:-$(git rev-list --count HEAD 2>/dev/null || echo 1)}"
 APP="$BUILD_DIR/$APP_NAME.app"
 
-swift_flags=(-c release)
-if [[ "${UNIVERSAL:-0}" == "1" ]]; then
-  swift_flags+=(--arch arm64 --arch x86_64)
-fi
-
 echo "==> Compiling $EXECUTABLE $VERSION ($BUILD_NUMBER)"
-swift build "${swift_flags[@]}"
-BIN_DIR="$(swift build "${swift_flags[@]}" --show-bin-path)"
+if [[ "${UNIVERSAL:-0}" == "1" ]]; then
+  # One build per architecture, joined with lipo. Unlike `--arch arm64 --arch x86_64`, this
+  # works with the Command Line Tools alone.
+  binaries=()
+  for arch in arm64 x86_64; do
+    flags=(-c release --triple "$arch-apple-macosx13.0")
+    swift build "${flags[@]}"
+    binaries+=("$(swift build "${flags[@]}" --show-bin-path)/$EXECUTABLE")
+  done
+else
+  swift build -c release
+  binaries=("$(swift build -c release --show-bin-path)/$EXECUTABLE")
+fi
 
 echo "==> Assembling $APP"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$BIN_DIR/$EXECUTABLE" "$APP/Contents/MacOS/$EXECUTABLE"
+if (( ${#binaries[@]} > 1 )); then
+  lipo -create "${binaries[@]}" -output "$APP/Contents/MacOS/$EXECUTABLE"
+else
+  cp "${binaries[0]}" "$APP/Contents/MacOS/$EXECUTABLE"
+fi
 sed -e "s/__VERSION__/$VERSION/" -e "s/__BUILD__/$BUILD_NUMBER/" Packaging/Info.plist > "$APP/Contents/Info.plist"
 plutil -lint "$APP/Contents/Info.plist" > /dev/null
 
@@ -43,7 +53,13 @@ fi
 
 echo "==> Signing"
 # Ad-hoc signing ("-") is enough to run locally. Pass a Developer ID to distribute.
-codesign --force --sign "${CODESIGN_IDENTITY:--}" --options runtime "$APP"
+IDENTITY="${CODESIGN_IDENTITY:--}"
+sign_flags=(--force --sign "$IDENTITY" --options runtime)
+if [[ "$IDENTITY" != "-" ]]; then
+  # Notarization needs a secure timestamp, which ad-hoc signatures can't have.
+  sign_flags+=(--timestamp)
+fi
+codesign "${sign_flags[@]}" "$APP"
 codesign --verify --strict "$APP"
 
 echo "==> Built $APP"

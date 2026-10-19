@@ -46,9 +46,25 @@ These are the same numbers shown by `/usage` in Claude Code and on **claude.ai �
 
 You'll need:
 
-- macOS 13 Ventura or later
+- macOS 13 Ventura or later, on Apple silicon or Intel
 - [Claude Code](https://claude.com/claude-code), signed in once with your Claude Pro, Max, Team or Enterprise account (run `claude auth login`)
-- Xcode 15+ or the Xcode Command Line Tools (Swift 5.9+) to build
+
+### Download
+
+1. Download **[Claude-Usage.dmg](https://github.com/mihok/osx-claude-usage/releases/latest/download/Claude-Usage.dmg)** from the [latest release](https://github.com/mihok/osx-claude-usage/releases/latest).
+2. Open it and drag **Claude Usage** onto the **Applications** folder.
+3. Open **Claude Usage** from Applications. The rings appear in your menu bar right away. To keep them there after a restart, open **Settings…** and turn on **Launch at login**.
+
+The first time you open it, macOS asks you to confirm, because the app isn't notarized by Apple:
+
+- **macOS 15 Sequoia or later:** macOS says it can't verify the app. Click **Done**, open **System Settings › Privacy & Security**, scroll down and click **Open Anyway**.
+- **macOS 13 or 14:** Control-click the app in Applications, choose **Open**, then click **Open** again.
+
+To update, download the new version and drag it onto Applications again, replacing the old one. Opening it quits the old copy in the menu bar.
+
+### Build from source
+
+You'll also need Xcode 15+ or the Xcode Command Line Tools (Swift 5.9+).
 
 ```sh
 git clone https://github.com/mihok/osx-claude-usage.git
@@ -56,9 +72,7 @@ cd osx-claude-usage
 make install
 ```
 
-`make install` builds **Claude Usage.app**, copies it to `/Applications` (or `~/Applications`) and starts it. The rings appear in your menu bar right away. To keep them there after a restart, open **Settings…** and turn on **Launch at login**.
-
-To update, `git pull` and run `make install` again.
+`make install` builds **Claude Usage.app**, copies it to `/Applications` (or `~/Applications`) and starts it. To update, `git pull` and run `make install` again.
 
 ## Using it
 
@@ -131,8 +145,8 @@ Run `claude update`, or choose a newer install in **Settings › Claude Code**.
 **"Claude Code couldn't fetch your usage"**
 Claude limits how often usage can be checked. The app keeps showing the last known values and retries with a growing delay. If it keeps happening, set a longer refresh interval. Updating Claude Code with `claude update` can also help.
 
-**macOS says the app can't be opened**
-This only happens with a copy you downloaded rather than built yourself. Right-click the app, choose **Open**, or run `xattr -dr com.apple.quarantine "/Applications/Claude Usage.app"`.
+**macOS says the app can't be opened or verified**
+This happens the first time you open a downloaded copy. Confirm it as described under [Download](#download), or run `xattr -dr com.apple.quarantine "/Applications/Claude Usage.app"` in Terminal.
 
 **Anything else**
 Click **Copy Diagnostics** in the error message or in Settings and paste it into an issue. It lists which `claude` ran, its version, whether it's signed in, which sign-in variables your shell sets (names only) and what Claude Code printed. It contains no email address, token or key.
@@ -143,6 +157,8 @@ Click **Copy Diagnostics** in the error message or in Settings and paste it into
 make build     # swift build (debug)
 make test      # unit tests (needs full Xcode for XCTest)
 make app       # build/Claude Usage.app, release, ad-hoc signed
+make dmg       # build/Claude-Usage.dmg to share: the app for Apple silicon and Intel, next to Applications
+make release   # build the disk image and publish it as a GitHub release for the version in VERSION
 make run       # build and launch the .app
 make preview   # render the rings, panel, settings and icon with sample data to build/preview
 ```
@@ -154,10 +170,24 @@ Sources/ClaudeUsageCore/   Running Claude Code, parsing its usage report, format
 Sources/ClaudeUsage/       The app: status item, ring renderer, details panel, settings
 Tests/                     XCTest suite for ClaudeUsageCore
 Packaging/Info.plist       App bundle metadata (menu bar only, no Dock icon)
-scripts/                   build-app.sh (assemble, render icon, sign) and install.sh
+scripts/                   build-app.sh (assemble, render icon, sign), make-dmg.sh, release.sh and install.sh
 ```
 
-To build a universal (Apple silicon + Intel) binary, run `UNIVERSAL=1 make app`. To distribute a signed copy, set `CODESIGN_IDENTITY` to your Developer ID.
+To build a universal (Apple silicon + Intel) app, run `UNIVERSAL=1 make app`.
+
+### Releasing
+
+1. Raise the number in `VERSION`, then commit and push.
+2. Run `make release`. It needs the [GitHub CLI](https://cli.github.com) (`brew install gh`, then `gh auth login`). It builds `Claude-Usage.dmg`, tags the release `v<VERSION>` and uploads it, so the download link above always gets the newest version.
+
+Without an Apple Developer ID, the app is ad-hoc signed and people confirm it once on first launch. With a Developer ID (Apple Developer Program), sign and notarize it so it opens like any other downloaded app:
+
+```sh
+# Once: save notarization credentials (uses an app-specific password from appleid.apple.com)
+xcrun notarytool store-credentials claude-usage --apple-id you@example.com --team-id TEAMID
+
+CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" NOTARY_PROFILE=claude-usage make release
+```
 
 ## Caveats
 

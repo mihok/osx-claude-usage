@@ -1,4 +1,4 @@
-.PHONY: build test app install run preview clean
+.PHONY: build test app dmg release install run preview clean
 
 build:
 	swift build
@@ -8,6 +8,12 @@ test:
 
 app:
 	scripts/build-app.sh
+
+dmg:
+	scripts/make-dmg.sh
+
+release:
+	scripts/release.sh
 
 install:
 	scripts/install.sh
