@@ -1,3 +1,4 @@
+import AppKit
 import ClaudeUsageCore
 import SwiftUI
 
@@ -29,7 +30,12 @@ struct UsagePopoverView: View {
             Divider()
             meters(now: now)
             if let error = store.lastError {
-                ErrorBanner(error: error, hasData: store.snapshot != nil, openSettings: openSettings)
+                ErrorBanner(
+                    error: error,
+                    hasData: store.snapshot != nil,
+                    diagnostics: store.diagnostics,
+                    openSettings: openSettings
+                )
                     .padding(.horizontal, 16)
                     .padding(.bottom, 14)
             }
@@ -194,6 +200,7 @@ struct RingGauge: View {
 private struct ErrorBanner: View {
     let error: UsageError
     let hasData: Bool
+    let diagnostics: ClaudeDiagnostics?
     let openSettings: () -> Void
 
     var body: some View {
@@ -211,10 +218,26 @@ private struct ErrorBanner: View {
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                if needsSettings {
-                    Button("Open Settings…", action: openSettings)
-                        .controlSize(.small)
+                if let checked = diagnostics?.cliDescription {
+                    Text("Checked \(checked)")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
                 }
+                HStack(spacing: 8) {
+                    if needsSettings {
+                        Button("Open Settings…", action: openSettings)
+                    }
+                    if let diagnostics {
+                        Button("Copy Diagnostics") {
+                            Diagnostics.copy(diagnostics)
+                        }
+                        .help("Copy what Claude Code reported, to paste into a bug report")
+                    }
+                }
+                .controlSize(.small)
             }
             Spacer(minLength: 0)
         }
@@ -223,7 +246,18 @@ private struct ErrorBanner: View {
     }
 
     private var needsSettings: Bool {
-        if case .cliNotFound = error { return true }
-        return false
+        switch error {
+        case .cliNotFound, .cliTooOld, .notSignedIn: return true
+        default: return false
+        }
+    }
+}
+
+enum Diagnostics {
+    /// Puts the diagnostics report on the clipboard.
+    @MainActor
+    static func copy(_ diagnostics: ClaudeDiagnostics) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(diagnostics.report(appVersion: AppInfo.version), forType: .string)
     }
 }

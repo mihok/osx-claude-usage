@@ -29,27 +29,10 @@ public enum ClaudeUsageReport {
         stderr: String = "",
         fetchedAt: Date = Date()
     ) throws -> UsageSnapshot {
-        var report: [String: Any]?
-        var texts: [String] = []
+        let scanned = scan(output)
+        let text = scanned.text
 
-        for line in output.split(whereSeparator: \.isNewline) {
-            guard line.first == "{",
-                  let object = (try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any]
-            else { continue }
-            if let usageReport = JSONValue.object(object["usage_report"]) {
-                report = usageReport
-            }
-            if JSONValue.string(object["type"]) == "result", let result = JSONValue.string(object["result"]) {
-                texts.append(result)
-            }
-            if JSONValue.string(object["type"]) == "assistant",
-               let content = JSONValue.object(object["message"])?["content"] as? [[String: Any]] {
-                texts += content.compactMap { JSONValue.string($0["text"]) }
-            }
-        }
-        let text = texts.joined(separator: "\n")
-
-        if let report {
+        if let report = scanned.report {
             guard let rateLimits = JSONValue.object(report["rate_limits"]),
                   let rows = JSONValue.array(rateLimits["limits"]) else {
                 // Claude Code couldn't fetch the plan's usage this time.
@@ -63,6 +46,52 @@ public enum ClaudeUsageReport {
         let meters = meters(fromText: text)
         guard !meters.isEmpty else { throw failure(text: text, stderr: stderr) }
         return UsageSnapshot(meters: meters, fetchedAt: fetchedAt)
+    }
+
+    /// What a run printed, for troubleshooting: the `/usage` text and whether structured rows came with it.
+    public struct Summary: Equatable, Sendable {
+        public let text: String
+        public let hasUsageReport: Bool
+        public let hasUsageRows: Bool
+    }
+
+    public static func summary(ofStreamJSON output: String) -> Summary {
+        let scanned = scan(output)
+        let rateLimits = scanned.report.flatMap { JSONValue.object($0["rate_limits"]) }
+        return Summary(
+            text: scanned.text,
+            hasUsageReport: scanned.report != nil,
+            hasUsageRows: rateLimits.flatMap { JSONValue.array($0["limits"]) }?.isEmpty == false
+        )
+    }
+
+    private struct Scanned {
+        var report: [String: Any]?
+        var resultText: String?
+        var assistantTexts: [String] = []
+
+        /// The `/usage` text: the final result, or what the assistant messages carried.
+        var text: String { resultText ?? assistantTexts.joined(separator: "\n") }
+    }
+
+    private static func scan(_ output: String) -> Scanned {
+        var scanned = Scanned()
+        for line in output.split(whereSeparator: \.isNewline) {
+            guard line.first == "{",
+                  let object = (try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any]
+            else { continue }
+            if let usageReport = JSONValue.object(object["usage_report"]) {
+                scanned.report = usageReport
+            }
+            if JSONValue.string(object["type"]) == "result", let result = JSONValue.string(object["result"]) {
+                scanned.resultText = result
+            }
+            if JSONValue.string(object["type"]) == "assistant",
+               let content = JSONValue.object(object["message"])?["content"] as? [[String: Any]] {
+                scanned.assistantTexts += content.compactMap { JSONValue.string($0["text"]) }
+            }
+        }
+        return scanned
     }
 
     // MARK: - Structured rows

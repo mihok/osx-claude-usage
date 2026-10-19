@@ -10,6 +10,7 @@ import SwiftUI
 final class SettingsModel: ObservableObject {
     /// Where Claude Code was found, or nil if it wasn't; empty string while looking.
     @Published private(set) var detectedClaudePath: String? = ""
+    @Published private(set) var detectedClaudeVersion: String?
     @Published private(set) var launchAtLogin = LaunchAtLogin.isEnabled
     @Published private(set) var launchAtLoginMessage: String?
 
@@ -21,6 +22,7 @@ final class SettingsModel: ObservableObject {
         // A newer lookup has started if the path changed meanwhile.
         guard !Task.isCancelled else { return }
         detectedClaudePath = found?.executable.path
+        detectedClaudeVersion = found?.version
     }
 
     func setLaunchAtLogin(_ enabled: Bool) {
@@ -101,6 +103,13 @@ struct SettingsView: View {
                         .font(.callout)
                         .foregroundColor(.secondary)
                 }
+                LabeledContent("Troubleshooting") {
+                    Button("Copy Diagnostics") {
+                        if let diagnostics = store.diagnostics { Diagnostics.copy(diagnostics) }
+                    }
+                    .disabled(store.diagnostics == nil)
+                    .help("Copy what Claude Code reported on the last check, to paste into a bug report")
+                }
             } header: {
                 Text("General")
             } footer: {
@@ -120,7 +129,9 @@ struct SettingsView: View {
         switch model.detectedClaudePath {
         case .none: return settings.claudePath.isEmpty ? "Not found" : "Nothing runnable at that location"
         case .some(""): return "Looking…"
-        case let .some(path): return (path as NSString).abbreviatingWithTildeInPath
+        case let .some(path):
+            let shortPath = (path as NSString).abbreviatingWithTildeInPath
+            return model.detectedClaudeVersion.map { "\(shortPath) (\($0))" } ?? shortPath
         }
     }
 

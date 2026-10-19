@@ -7,51 +7,53 @@ import Foundation
 /// `/usage` runs locally inside Claude Code: no message is sent to a model.
 public struct ClaudeCLI: Sendable {
     public let executable: URL
+    /// The version `claude --version` reported, e.g. "2.1.303".
+    public let version: String?
+    /// Whether `environment` came from the user's login shell, as in Terminal.
+    public let usesLoginShellEnvironment: Bool
     public var environment: [String: String]
     public var workingDirectory: URL?
     public var timeout: TimeInterval
 
     public init(
         executable: URL,
+        version: String? = nil,
+        usesLoginShellEnvironment: Bool = false,
         environment: [String: String],
         workingDirectory: URL? = nil,
         timeout: TimeInterval = 90
     ) {
         self.executable = executable
+        self.version = version
+        self.usesLoginShellEnvironment = usesLoginShellEnvironment
         self.environment = environment
         self.workingDirectory = workingDirectory
         self.timeout = timeout
     }
 
     /// `--safe-mode` keeps the user's hooks, plugins and MCP servers from starting on every check,
-    /// and `--no-session-persistence` keeps these runs out of the session history.
-    /// Both are dropped if the installed Claude Code is too old to know them.
+    /// and `--no-session-persistence` keeps these runs out of the session history. A Claude Code
+    /// too old to know them is reported as such rather than run without them.
     static let usageArguments = [
         "-p", "/usage",
         "--output-format", "stream-json", "--verbose",
         "--no-session-persistence",
         "--safe-mode",
     ]
-    static let optionalArguments: Set<String> = ["--no-session-persistence", "--safe-mode"]
 
     /// Blocking: runs Claude Code. Call off the main thread.
-    public func fetchUsage(now: Date = Date()) throws -> UsageSnapshot {
-        var arguments = Self.usageArguments
-        while true {
-            let result = try run(arguments)
-            if result.status != 0,
-               let option = Self.unknownOption(in: result.stderrText + result.stdoutText),
-               Self.optionalArguments.contains(option),
-               arguments.contains(option) {
-                arguments.removeAll { $0 == option }
-                continue
-            }
-            return try ClaudeUsageReport.snapshot(
-                fromStreamJSON: result.stdoutText,
-                stderr: result.stderrText,
-                fetchedAt: now
-            )
+    /// - Parameter record: Receives Claude Code's raw output, for diagnostics.
+    public func fetchUsage(now: Date = Date(), record: ((ProcessResult) -> Void)? = nil) throws -> UsageSnapshot {
+        let result = try run(Self.usageArguments)
+        record?(result)
+        if result.status != 0, Self.unknownOption(in: result.stderrText + result.stdoutText) != nil {
+            throw UsageError.cliTooOld(version)
         }
+        return try ClaudeUsageReport.snapshot(
+            fromStreamJSON: result.stdoutText,
+            stderr: result.stderrText,
+            fetchedAt: now
+        )
     }
 
     /// Blocking: `claude auth status`, which only reads local state.
@@ -90,25 +92,42 @@ public struct ClaudeCLI: Sendable {
     // MARK: - Finding Claude Code
 
     /// Finds Claude Code and prepares to run it the way Terminal would.
-    /// Blocking (may ask the login shell for its PATH once); call off the main thread.
+    /// Blocking (asks the login shell for its environment once); call off the main thread.
     /// - Parameters:
     ///   - customPath: The location chosen in Settings, or empty to search.
-    ///   - shell: The user's login shell, used to learn the PATH Terminal sees.
+    ///   - shell: The user's login shell, whose environment Terminal sessions see.
     public static func resolve(
         customPath: String?,
         shell: String?,
         workingDirectory: URL?,
-        baseEnvironment: [String: String] = ProcessInfo.processInfo.environment
+        baseEnvironment: [String: String] = ProcessInfo.processInfo.environment,
+        home: URL = FileManager.default.homeDirectoryForCurrentUser
     ) throws -> ClaudeCLI {
-        let loginPath = shell.flatMap { LoginShellPath.cached(for: $0) }
-        let searchPath = [loginPath, baseEnvironment["PATH"]].compactMap { $0 }.joined(separator: ":")
-        guard let executable = locate(customPath: customPath, searchPath: searchPath) else {
-            let custom = customPath?.trimmingCharacters(in: .whitespacesAndNewlines)
-            throw UsageError.cliNotFound(customPath: custom?.isEmpty == false ? custom : nil)
+        let shellEnvironment = shell.flatMap { ShellEnvironment.cached(for: $0) }
+        let base = shellEnvironment ?? baseEnvironment
+        let searchPath = [shellEnvironment?["PATH"], baseEnvironment["PATH"]]
+            .compactMap { $0 }
+            .joined(separator: ":")
+
+        let custom = customPath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let candidates = locateAll(customPath: custom, searchPath: searchPath, home: home)
+        guard !candidates.isEmpty else {
+            throw UsageError.cliNotFound(customPath: custom.isEmpty ? nil : custom)
         }
+
+        // Probe versions with the same environment the real run uses.
+        let probeEnvironment = environment(base: base, executable: candidates[0])
+        let versioned = candidates.map { ($0, ClaudeVersion.cached(for: $0, environment: probeEnvironment)) }
+        // An old install left elsewhere on the PATH shouldn't shadow the one that updates itself.
+        let chosen = versioned.max { lhs, rhs in
+            ClaudeVersion.isOlder(lhs.1, than: rhs.1)
+        } ?? versioned[0]
+
         return ClaudeCLI(
-            executable: executable,
-            environment: environment(base: baseEnvironment, loginShellPath: loginPath, executable: executable),
+            executable: chosen.0,
+            version: chosen.1,
+            usesLoginShellEnvironment: shellEnvironment != nil,
+            environment: environment(base: base, executable: chosen.0),
             workingDirectory: workingDirectory
         )
     }
@@ -128,85 +147,167 @@ public struct ClaudeCLI: Sendable {
         ]
     }
 
-    /// Finds the `claude` executable: the user's chosen path, then PATH, then common locations.
-    /// Returns nil if a chosen path doesn't point at an executable.
+    /// Every `claude` executable worth considering, in PATH order: just the chosen path if there is
+    /// one (empty if it isn't executable), otherwise PATH and then the common locations, with
+    /// links to the same file listed once.
+    public static func locateAll(
+        customPath: String?,
+        searchPath: String?,
+        home: URL = FileManager.default.homeDirectoryForCurrentUser,
+        fileManager: FileManager = .default
+    ) -> [URL] {
+        if let customPath = customPath?.trimmingCharacters(in: .whitespacesAndNewlines), !customPath.isEmpty {
+            let url = URL(fileURLWithPath: (customPath as NSString).expandingTildeInPath)
+            return fileManager.isExecutableFile(atPath: url.path) ? [url] : []
+        }
+        let pathCandidates = (searchPath ?? "").split(separator: ":").map {
+            URL(fileURLWithPath: String($0)).appendingPathComponent("claude")
+        }
+        var seen = Set<String>()
+        return (pathCandidates + commonLocations(home: home)).filter { url in
+            guard fileManager.isExecutableFile(atPath: url.path) else { return false }
+            return seen.insert(url.resolvingSymlinksInPath().path).inserted
+        }
+    }
+
+    /// The first `claude` found, without comparing versions.
     public static func locate(
         customPath: String?,
         searchPath: String?,
         home: URL = FileManager.default.homeDirectoryForCurrentUser,
         fileManager: FileManager = .default
     ) -> URL? {
-        if let customPath = customPath?.trimmingCharacters(in: .whitespacesAndNewlines), !customPath.isEmpty {
-            let url = URL(fileURLWithPath: (customPath as NSString).expandingTildeInPath)
-            return fileManager.isExecutableFile(atPath: url.path) ? url : nil
-        }
-        let pathDirectories = (searchPath ?? "").split(separator: ":").map {
-            URL(fileURLWithPath: String($0)).appendingPathComponent("claude")
-        }
-        return (pathDirectories + commonLocations(home: home)).first {
-            fileManager.isExecutableFile(atPath: $0.path)
-        }
+        locateAll(customPath: customPath, searchPath: searchPath, home: home, fileManager: fileManager).first
     }
 
-    /// The PATH a login shell sets up, so Claude Code (and Node, for npm installs) resolve the
-    /// same way they do in Terminal. Blocking; nil if the shell doesn't answer.
-    public static func loginShellPath(shell: String) -> String? {
-        let marker = "__CLAUDE_USAGE_PATH__"
+    /// The environment an interactive login shell sets up: what `claude` sees when run in
+    /// Terminal, including anything set in `.zshrc` such as `CLAUDE_CONFIG_DIR` or PATH additions.
+    /// Blocking; nil if the shell doesn't answer.
+    public static func loginShellEnvironment(shell: String) -> [String: String]? {
+        let marker = "__CLAUDE_USAGE_ENV__"
         guard let result = try? ProcessRunner.run(
             URL(fileURLWithPath: shell),
-            arguments: ["-l", "-c", "printf '\(marker)%s\(marker)' \"$PATH\""],
-            timeout: 10
+            arguments: ["-i", "-l", "-c", "printf '\(marker)'; /usr/bin/env -0; printf '\(marker)'"],
+            timeout: 15
         ), !result.timedOut else { return nil }
         // Profile scripts can print their own output; take only what sits between the markers.
         let parts = result.stdoutText.components(separatedBy: marker)
         guard parts.count >= 3 else { return nil }
-        var path = parts[parts.count - 2].trimmingCharacters(in: .whitespacesAndNewlines)
-        // fish prints its PATH list space-separated.
-        if !path.contains(":"), path.contains(" ") {
-            path = path.replacingOccurrences(of: " ", with: ":")
-        }
-        return path.isEmpty ? nil : path
+        return parseEnvironment(parts[parts.count - 2])
     }
 
-    /// The environment Claude Code runs with: the app's own, with a PATH covering the login
-    /// shell's directories, Claude Code's own directory and the usual install locations.
-    public static func environment(
-        base: [String: String],
-        loginShellPath: String?,
-        executable: URL
-    ) -> [String: String] {
-        var directories: [String] = [executable.deletingLastPathComponent().path]
-        for path in [loginShellPath, base["PATH"]] {
-            directories += (path ?? "").split(separator: ":").map(String.init)
+    /// Parses `env -0` output (NUL-separated `NAME=value` entries), or plain `env` output if the
+    /// entries turn out to be newline-separated. Nil unless it looks like a real environment.
+    static func parseEnvironment(_ output: String) -> [String: String]? {
+        let separator: Character = output.contains("\0") ? "\0" : "\n"
+        var environment: [String: String] = [:]
+        for entry in output.split(separator: separator) {
+            guard let equals = entry.firstIndex(of: "="), equals != entry.startIndex else { continue }
+            let name = String(entry[..<equals]).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty, name.allSatisfy({ $0 == "_" || ($0.isASCII && ($0.isLetter || $0.isNumber)) }) else {
+                continue
+            }
+            environment[name] = String(entry[entry.index(after: equals)...])
         }
+        guard environment["HOME"] != nil, environment["PATH"] != nil else { return nil }
+        return environment
+    }
+
+    /// Variables that would make Claude Code bill an API key instead of reporting plan usage, or
+    /// that only describe the shell the environment was captured from.
+    static let removedVariables: Set<String> = [
+        "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
+        "PWD", "OLDPWD", "SHLVL", "_",
+    ]
+
+    /// The environment Claude Code runs with: `base` (normally the login shell's) without API keys,
+    /// with a PATH covering Claude Code's own directory and the usual install locations.
+    public static func environment(base: [String: String], executable: URL) -> [String: String] {
+        var directories: [String] = [executable.deletingLastPathComponent().path]
+        directories += (base["PATH"] ?? "").split(separator: ":").map(String.init)
         directories += ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
         var seen = Set<String>()
         let unique = directories.filter { !$0.isEmpty && seen.insert($0).inserted }
 
-        var environment = base
+        var environment = base.filter { !removedVariables.contains($0.key) }
         environment["PATH"] = unique.joined(separator: ":")
         environment["NO_COLOR"] = "1"
         return environment
     }
 }
 
-/// Remembers each login shell's PATH; asking the shell takes a moment.
-private enum LoginShellPath {
+/// Remembers each login shell's environment; starting an interactive shell takes a moment.
+private enum ShellEnvironment {
     private static let lock = NSLock()
-    private static var paths: [String: String?] = [:]
+    private static var environments: [String: [String: String]?] = [:]
 
-    static func cached(for shell: String) -> String? {
+    static func cached(for shell: String) -> [String: String]? {
         lock.lock()
-        if let known = paths[shell] {
+        if let known = environments[shell] {
             lock.unlock()
             return known
         }
         lock.unlock()
-        let path = ClaudeCLI.loginShellPath(shell: shell)
+        let environment = ClaudeCLI.loginShellEnvironment(shell: shell)
         lock.lock()
-        paths[shell] = path
+        environments[shell] = environment
         lock.unlock()
-        return path
+        return environment
+    }
+}
+
+/// `claude --version`, remembered per executable until the file changes (Claude Code updates
+/// itself in place).
+enum ClaudeVersion {
+    private static let lock = NSLock()
+    private static var versions: [String: (modified: Date?, version: String?)] = [:]
+
+    static func cached(for executable: URL, environment: [String: String]) -> String? {
+        let resolved = executable.resolvingSymlinksInPath().path
+        let modified = (try? FileManager.default.attributesOfItem(atPath: resolved))?[.modificationDate] as? Date
+        lock.lock()
+        if let known = versions[resolved], known.modified == modified {
+            lock.unlock()
+            return known.version
+        }
+        lock.unlock()
+        let version = probe(executable, environment: environment)
+        lock.lock()
+        versions[resolved] = (modified, version)
+        lock.unlock()
+        return version
+    }
+
+    static func probe(_ executable: URL, environment: [String: String]) -> String? {
+        guard let result = try? ProcessRunner.run(
+            executable, arguments: ["--version"], environment: environment, timeout: 20
+        ), !result.timedOut, result.status == 0 else { return nil }
+        return parse(result.stdoutText)
+    }
+
+    /// "2.1.303 (Claude Code)" → "2.1.303".
+    static func parse(_ output: String) -> String? {
+        for word in output.split(whereSeparator: { $0 == " " || $0.isNewline }) {
+            let parts = word.split(separator: ".")
+            if parts.count >= 2, parts.allSatisfy({ !$0.isEmpty && $0.allSatisfy(\.isNumber) }) {
+                return String(word)
+            }
+        }
+        return nil
+    }
+
+    /// Compares dotted versions numerically; an unknown version counts as oldest.
+    static func isOlder(_ lhs: String?, than rhs: String?) -> Bool {
+        guard let rhs else { return false }
+        guard let lhs else { return true }
+        let left = lhs.split(separator: ".").map { Int($0) ?? 0 }
+        let right = rhs.split(separator: ".").map { Int($0) ?? 0 }
+        for index in 0..<max(left.count, right.count) {
+            let l = index < left.count ? left[index] : 0
+            let r = index < right.count ? right[index] : 0
+            if l != r { return l < r }
+        }
+        return false
     }
 }
 

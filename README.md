@@ -88,9 +88,9 @@ claude -p /usage --output-format stream-json --verbose --no-session-persistence 
 - **`/usage` runs inside Claude Code.** No message is sent to a model, so checking usage doesn't use any of it up.
 - **Claude Code fetches the numbers with its own sign-in.** It renews that sign-in when needed, so you never have to open Claude Code just to keep the rings working. The app never reads, stores or sends a Claude token or cookie.
 - **The checks stay out of your way.** `--safe-mode` keeps your hooks, plugins and MCP servers from starting, and `--no-session-persistence` keeps the checks out of your session history.
-- **Older Claude Code versions work too.** If yours doesn't know one of these options, the app drops it and tries again.
+- **It never runs without those options.** If your Claude Code is too old to know them, the app asks you to update it instead.
 
-The app finds `claude` on your shell's PATH and in the usual install locations, such as `~/.local/bin` and `/opt/homebrew/bin`. If yours lives somewhere else, choose it in **Settings › Claude Code**.
+Claude Code runs with the same environment your shell gives it in Terminal (minus any API keys, so your subscription is what's measured). The app looks for `claude` on that PATH and in the usual install locations, such as `~/.local/bin` and `/opt/homebrew/bin`, and uses the newest one it finds. To use a different one, choose it in **Settings › Claude Code**.
 
 ## Privacy and security
 
@@ -106,6 +106,14 @@ Install [Claude Code](https://claude.com/claude-code). If it's already installed
 
 **"Claude Code isn't signed in"**
 Run `claude` in Terminal once and sign in with your Claude account. You can quit it afterwards; the rings update within a minute. Your sign-in lasts a long time, but if it ever fully expires, Claude Code needs you to sign in again the same way.
+
+If `claude` already works in Terminal, the app may have found a different install. **Settings › Claude Code** shows which `claude` it uses and its version; compare that with `which claude` and `claude --version` in Terminal, and choose the right one if they differ. The app runs Claude Code with your shell's environment, so restart the app after changing your shell profile.
+
+**"Claude Code … is too old to report usage"**
+Run `claude update`, or choose a newer install in **Settings › Claude Code**.
+
+**Anything else**
+Click **Copy Diagnostics** in the error message or in Settings and paste it into an issue. It lists which `claude` ran, its version, whether it's signed in and what it printed. It contains no email address or token.
 
 **"Claude Code couldn't fetch your usage"**
 Claude limits how often usage can be checked. The app keeps showing the last known values and retries with a growing delay. If it keeps happening, set a longer refresh interval. Updating Claude Code with `claude update` can also help.

@@ -114,8 +114,13 @@ final class ClaudeCLITests: XCTestCase {
     }
 
     /// Writes an executable shell script standing in for `claude`.
-    private func fakeClaude(_ body: String) throws -> URL {
-        let url = directory.appendingPathComponent("claude")
+    private func fakeClaude(_ body: String, in folder: String? = nil) throws -> URL {
+        var parent: URL = directory
+        if let folder {
+            parent = directory.appendingPathComponent(folder)
+            try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        }
+        let url = parent.appendingPathComponent("claude")
         try Data("#!/bin/sh\n\(body)\n".utf8).write(to: url)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
         return url
@@ -141,21 +146,33 @@ final class ClaudeCLITests: XCTestCase {
         )
     }
 
-    func testDropsOptionsAnOlderClaudeDoesNotKnow() throws {
-        let output = directory.appendingPathComponent("output.jsonl")
-        try Data(streamJSON.utf8).write(to: output)
+    func testReportsAnOlderClaudeInsteadOfRetrying() throws {
+        // Rerunning without the safety options could reach a Claude Code that sends /usage to a
+        // model, so an unknown option ends the check.
+        let calls = directory.appendingPathComponent("calls.txt")
         let claude = try fakeClaude("""
-        for argument in "$@"; do
-          if [ "$argument" = "--safe-mode" ]; then
-            echo "error: unknown option '--safe-mode'" >&2
-            exit 1
-          fi
-        done
-        cat '\(output.path)'
+        echo run >> '\(calls.path)'
+        echo "error: unknown option '--safe-mode'" >&2
+        exit 1
         """)
 
-        let snapshot = try ClaudeCLI(executable: claude, environment: Self.environment, timeout: 20).fetchUsage()
-        XCTAssertEqual(snapshot.meter(id: MeterID.weekly)?.percent, 71.4)
+        let cli = ClaudeCLI(executable: claude, version: "1.0.80", environment: Self.environment, timeout: 20)
+        XCTAssertThrowsError(try cli.fetchUsage()) { error in
+            XCTAssertEqual(error as? UsageError, .cliTooOld("1.0.80"))
+        }
+        XCTAssertEqual(try String(contentsOf: calls, encoding: .utf8), "run\n")
+    }
+
+    func testRecordsOutputForDiagnostics() throws {
+        let claude = try fakeClaude(#"echo '{"type":"result","result":"Not logged in · Please run /login"}'; echo 'warning: something' >&2"#)
+        var recorded: ProcessResult?
+        XCTAssertThrowsError(try ClaudeCLI(executable: claude, environment: Self.environment, timeout: 20).fetchUsage {
+            recorded = $0
+        })
+        let output = try XCTUnwrap(recorded)
+        let summary = ClaudeUsageReport.summary(ofStreamJSON: output.stdoutText)
+        XCTAssertEqual(summary, ClaudeUsageReport.Summary(text: "Not logged in · Please run /login", hasUsageReport: false, hasUsageRows: false))
+        XCTAssertEqual(output.stderrText, "warning: something\n")
     }
 
     func testTimesOut() throws {
@@ -222,10 +239,54 @@ final class ClaudeCLITests: XCTestCase {
         }
     }
 
-    func testEnvironmentIncludesShellAndInstallDirectories() {
+    func testResolvePrefersTheNewestClaude() throws {
+        let old = try fakeClaude(#"[ "$1" = "--version" ] && echo "1.0.80 (Claude Code)""#, in: "old")
+        let new = try fakeClaude(#"[ "$1" = "--version" ] && echo "999.0.0 (Claude Code)""#, in: "new")
+        let home = directory.appendingPathComponent("home")
+        let environment = [
+            "PATH": "\(old.deletingLastPathComponent().path):\(new.deletingLastPathComponent().path):/usr/bin:/bin",
+            "HOME": home.path,
+            "ANTHROPIC_API_KEY": "sk-should-not-pass",
+        ]
+
+        let cli = try ClaudeCLI.resolve(
+            customPath: nil, shell: nil, workingDirectory: nil, baseEnvironment: environment, home: home
+        )
+        XCTAssertEqual(cli.executable.path, new.path)
+        XCTAssertEqual(cli.version, "999.0.0")
+        XCTAssertFalse(cli.usesLoginShellEnvironment)
+        XCTAssertNil(cli.environment["ANTHROPIC_API_KEY"])
+
+        // A chosen path is used as is, even when it's older.
+        let chosen = try ClaudeCLI.resolve(
+            customPath: old.path, shell: nil, workingDirectory: nil, baseEnvironment: environment, home: home
+        )
+        XCTAssertEqual(chosen.executable.path, old.path)
+        XCTAssertEqual(chosen.version, "1.0.80")
+    }
+
+    func testVersions() {
+        XCTAssertEqual(ClaudeVersion.parse("2.1.303 (Claude Code)\n"), "2.1.303")
+        XCTAssertEqual(ClaudeVersion.parse("claude 1.0"), "1.0")
+        XCTAssertNil(ClaudeVersion.parse("Claude Code"))
+        XCTAssertTrue(ClaudeVersion.isOlder("2.1.99", than: "2.1.303"))
+        XCTAssertFalse(ClaudeVersion.isOlder("2.10.0", than: "2.9.9"))
+        XCTAssertFalse(ClaudeVersion.isOlder("2.1", than: "2.1.0"))
+        XCTAssertTrue(ClaudeVersion.isOlder(nil, than: "1.0.0"))
+        XCTAssertFalse(ClaudeVersion.isOlder("1.0.0", than: nil))
+    }
+
+    func testEnvironmentKeepsShellSetupButNotAPIKeys() {
         let environment = ClaudeCLI.environment(
-            base: ["PATH": "/usr/bin:/bin", "HOME": "/Users/me"],
-            loginShellPath: "/Users/me/.nvm/versions/node/v22/bin:/usr/bin",
+            base: [
+                "PATH": "/Users/me/.nvm/versions/node/v22/bin:/usr/bin:/bin",
+                "HOME": "/Users/me",
+                "CLAUDE_CONFIG_DIR": "/Users/me/.claude-work",
+                "ANTHROPIC_API_KEY": "sk-ant-api",
+                "ANTHROPIC_AUTH_TOKEN": "token",
+                "CLAUDE_CODE_OAUTH_TOKEN": "oauth",
+                "SHLVL": "2",
+            ],
             executable: URL(fileURLWithPath: "/Users/me/.local/bin/claude")
         )
         let path = environment["PATH"]?.split(separator: ":").map(String.init) ?? []
@@ -234,15 +295,69 @@ final class ClaudeCLITests: XCTestCase {
         XCTAssertTrue(path.contains("/opt/homebrew/bin"))
         XCTAssertEqual(path.filter { $0 == "/usr/bin" }.count, 1)
         XCTAssertEqual(environment["HOME"], "/Users/me")
+        XCTAssertEqual(environment["CLAUDE_CONFIG_DIR"], "/Users/me/.claude-work")
+        XCTAssertEqual(environment["NO_COLOR"], "1")
+        for removed in ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "SHLVL"] {
+            XCTAssertNil(environment[removed], removed)
+        }
     }
 
-    func testLoginShellPath() throws {
-        let shell = try fakeClaude(#"printf 'noise from a profile\n__CLAUDE_USAGE_PATH__/opt/a:/opt/b__CLAUDE_USAGE_PATH__'"#)
-        XCTAssertEqual(ClaudeCLI.loginShellPath(shell: shell.path), "/opt/a:/opt/b")
+    func testLoginShellEnvironment() throws {
+        // Stands in for `zsh -i -l -c …`: profile noise, then `env -0` between the markers.
+        let shell = try fakeClaude(
+            #"printf 'noise from a profile\n__CLAUDE_USAGE_ENV__HOME=/Users/me\0PATH=/opt/a:/opt/b\0CLAUDE_CONFIG_DIR=/Users/me/.claude-work\0MULTI=line1\nline2\0__CLAUDE_USAGE_ENV__'"#
+        )
+        let environment = try XCTUnwrap(ClaudeCLI.loginShellEnvironment(shell: shell.path))
+        XCTAssertEqual(environment["PATH"], "/opt/a:/opt/b")
+        XCTAssertEqual(environment["CLAUDE_CONFIG_DIR"], "/Users/me/.claude-work")
+        XCTAssertEqual(environment["MULTI"], "line1\nline2")
+
+        XCTAssertNil(ClaudeCLI.loginShellEnvironment(shell: try fakeClaude("echo nothing useful").path))
+    }
+
+    func testParseEnvironment() {
+        XCTAssertEqual(ClaudeCLI.parseEnvironment("HOME=/h\nPATH=/p\nBAD LINE\n=x\n")?["PATH"], "/p")
+        // Without HOME and PATH it isn't a usable environment.
+        XCTAssertNil(ClaudeCLI.parseEnvironment("FOO=bar\0"))
     }
 
     func testUnknownOptionParsing() {
         XCTAssertEqual(ClaudeCLI.unknownOption(in: "error: unknown option '--safe-mode'\n"), "--safe-mode")
         XCTAssertNil(ClaudeCLI.unknownOption(in: "error: something else"))
+    }
+}
+
+final class ClaudeDiagnosticsTests: XCTestCase {
+    func testReport() {
+        var diagnostics = ClaudeDiagnostics(checkedAt: Date(timeIntervalSince1970: 1_791_126_840))
+        diagnostics.executable = NSHomeDirectory() + "/.local/bin/claude"
+        diagnostics.version = "2.1.303"
+        diagnostics.usedLoginShellEnvironment = true
+        diagnostics.exitStatus = 0
+        diagnostics.authStatus = ClaudeAuthStatus(loggedIn: false, authMethod: "none", subscriptionType: nil)
+        diagnostics.summary = ClaudeUsageReport.Summary(text: "Total cost: $0.00", hasUsageReport: false, hasUsageRows: false)
+        diagnostics.stderr = "\n"
+        diagnostics.error = UsageError.notSignedIn.localizedDescription
+
+        XCTAssertEqual(diagnostics.cliDescription, "claude 2.1.303 at ~/.local/bin/claude")
+        XCTAssertEqual(diagnostics.report(appVersion: "1.0.0"), """
+        Claude Usage 1.0.0
+        Checked: 2026-10-04T15:14:00Z
+        Claude Code: claude 2.1.303 at ~/.local/bin/claude
+        Environment: login shell (as in Terminal)
+        Exit status: 0
+        Signed in: no (none)
+        Usage report: missing
+        Error: Claude Code isn't signed in.
+
+        Claude Code printed:
+        Total cost: $0.00
+        """)
+    }
+
+    func testAbbreviatesHome() {
+        XCTAssertEqual(ClaudeDiagnostics.abbreviatingHome(in: "/Users/me/.local/bin/claude", home: "/Users/me"), "~/.local/bin/claude")
+        XCTAssertEqual(ClaudeDiagnostics.abbreviatingHome(in: "/Users/meg/claude", home: "/Users/me"), "/Users/meg/claude")
+        XCTAssertEqual(ClaudeDiagnostics.abbreviatingHome(in: "/opt/homebrew/bin/claude", home: "/Users/me"), "/opt/homebrew/bin/claude")
     }
 }

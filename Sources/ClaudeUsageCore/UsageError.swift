@@ -5,6 +5,8 @@ public enum UsageError: Error, Equatable, Sendable {
     case cliNotFound(customPath: String?)
     /// Claude Code is installed but not signed in to a Claude account.
     case notSignedIn
+    /// The installed Claude Code predates the options usage checks rely on.
+    case cliTooOld(String?)
     /// Claude Code ran but couldn't fetch the plan's usage this time.
     case usageUnavailable(String?)
     /// Claude Code failed to run or didn't finish.
@@ -15,7 +17,7 @@ public enum UsageError: Error, Equatable, Sendable {
     /// re-checked every minute so the meters recover soon after.
     public var isLocal: Bool {
         switch self {
-        case .cliNotFound, .notSignedIn:
+        case .cliNotFound, .notSignedIn, .cliTooOld:
             return true
         default:
             return false
@@ -33,6 +35,9 @@ extension UsageError: LocalizedError {
             return "Couldn't find Claude Code."
         case .notSignedIn:
             return "Claude Code isn't signed in."
+        case let .cliTooOld(version):
+            if let version { return "Claude Code \(version) is too old to report usage." }
+            return "Claude Code is too old to report usage."
         case let .usageUnavailable(detail):
             return "Claude Code couldn't fetch your usage" + (detail.map { ": \($0)" } ?? ".")
         case let .cliFailed(reason):
@@ -48,6 +53,8 @@ extension UsageError: LocalizedError {
             return "Install Claude Code and run `claude` once to sign in. If it's installed somewhere unusual, choose its location in Settings."
         case .notSignedIn:
             return "Run `claude` in Terminal once and sign in with your Claude account. After that, Claude Code doesn't need to be open."
+        case .cliTooOld:
+            return "Run `claude update` in Terminal, or choose a newer Claude Code in Settings."
         case .usageUnavailable:
             return "Claude may be limiting how often usage is checked. Showing the last known values; retrying automatically."
         case .cliFailed, .invalidResponse:

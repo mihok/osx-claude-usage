@@ -11,6 +11,8 @@ final class UsageStore: ObservableObject {
     @Published private(set) var isRefreshing = false
     @Published private(set) var planName: String?
     @Published private(set) var nextRefreshAt: Date?
+    /// What the last check learned about Claude Code, shown when something goes wrong.
+    @Published private(set) var diagnostics: ClaudeDiagnostics?
 
     private let settings: AppSettings
     private var scheduledRefresh: Task<Void, Never>?
@@ -95,16 +97,16 @@ final class UsageStore: ObservableObject {
         lastAttemptAt = Date()
 
         var failure: UsageError?
-        do {
-            let result = try await fetch(customPath: settings.claudePath, needsPlan: planName == nil)
+        let outcome = await fetch(customPath: settings.claudePath, needsPlan: planName == nil)
+        diagnostics = outcome.diagnostics
+        switch outcome.result {
+        case let .success(result):
             snapshot = result.snapshot
             if let plan = result.planName { planName = plan }
             lastError = nil
             consecutiveFailures = 0
-        } catch let error as UsageError {
+        case let .failure(error):
             failure = error
-        } catch {
-            failure = .cliFailed(error.localizedDescription)
         }
 
         if let failure {
@@ -132,29 +134,57 @@ final class UsageStore: ObservableObject {
         let planName: String?
     }
 
+    private struct FetchOutcome: Sendable {
+        let result: Result<FetchResult, UsageError>
+        let diagnostics: ClaudeDiagnostics
+    }
+
     /// Runs Claude Code's `/usage` off the main thread. Claude Code fetches the numbers with its
     /// own sign-in, renewing it when needed, so it doesn't have to be open.
-    private nonisolated func fetch(customPath: String, needsPlan: Bool) async throws -> FetchResult {
+    private nonisolated func fetch(customPath: String, needsPlan: Bool) async -> FetchOutcome {
         let shell = Self.loginShell
         let workingDirectory = Self.workingDirectory
-        return try await Task.detached(priority: .utility) {
-            let cli = try ClaudeCLI.resolve(
-                customPath: customPath,
-                shell: shell,
-                workingDirectory: workingDirectory
-            )
-            let snapshot: UsageSnapshot
+        return await Task.detached(priority: .utility) {
+            var diagnostics = ClaudeDiagnostics()
             do {
-                snapshot = try cli.fetchUsage()
-            } catch UsageError.usageUnavailable(let detail) {
-                // Tell "signed out" apart from a temporary problem.
-                if let status = try? cli.authStatus(), !status.loggedIn {
-                    throw UsageError.notSignedIn
+                let cli = try ClaudeCLI.resolve(
+                    customPath: customPath,
+                    shell: shell,
+                    workingDirectory: workingDirectory
+                )
+                diagnostics.executable = cli.executable.path
+                diagnostics.version = cli.version
+                diagnostics.usedLoginShellEnvironment = cli.usesLoginShellEnvironment
+
+                let snapshot: UsageSnapshot
+                do {
+                    snapshot = try cli.fetchUsage { output in
+                        diagnostics.exitStatus = output.status
+                        diagnostics.summary = ClaudeUsageReport.summary(ofStreamJSON: output.stdoutText)
+                        diagnostics.stderr = output.stderrText
+                    }
+                } catch let error as UsageError {
+                    // `auth status` only reads local state; it tells "signed out" apart from a
+                    // temporary problem and goes into the diagnostics.
+                    let status = try? cli.authStatus()
+                    diagnostics.authStatus = status
+                    if case .usageUnavailable = error, let status, !status.loggedIn {
+                        throw UsageError.notSignedIn
+                    }
+                    throw error
                 }
-                throw UsageError.usageUnavailable(detail)
+                var plan: String?
+                if needsPlan {
+                    let status = try? cli.authStatus()
+                    diagnostics.authStatus = status
+                    plan = status?.planName
+                }
+                return FetchOutcome(result: .success(FetchResult(snapshot: snapshot, planName: plan)), diagnostics: diagnostics)
+            } catch {
+                let usageError = error as? UsageError ?? .cliFailed(error.localizedDescription)
+                diagnostics.error = usageError.localizedDescription
+                return FetchOutcome(result: .failure(usageError), diagnostics: diagnostics)
             }
-            let plan = needsPlan ? (try? cli.authStatus())?.planName : nil
-            return FetchResult(snapshot: snapshot, planName: plan)
         }.value
     }
 
