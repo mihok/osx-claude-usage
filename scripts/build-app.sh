@@ -39,8 +39,9 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 if (( ${#binaries[@]} > 1 )); then
   lipo -create "${binaries[@]}" -output "$APP/Contents/MacOS/$EXECUTABLE"
-  if ! lipo -verify_arch arm64 x86_64 "$APP/Contents/MacOS/$EXECUTABLE"; then
-    echo "error: the app isn't universal: $(lipo -archs "$APP/Contents/MacOS/$EXECUTABLE")" >&2
+  archs=" $(lipo -archs "$APP/Contents/MacOS/$EXECUTABLE") "
+  if [[ "$archs" != *" arm64 "* || "$archs" != *" x86_64 "* ]]; then
+    echo "error: the app isn't universal; it has:$archs" >&2
     exit 1
   fi
 else
